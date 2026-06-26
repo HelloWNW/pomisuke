@@ -47,6 +47,11 @@ function buildMenuMessage() {
   };
 }
 
+// ── devInfo trigger ───────────────────────────────────────────────────────
+// /devInfo, \devInfo, devinfo (大文字小文字不問) でuserIdとgroupIdをログ返答
+// ぽみすけとは無関係: store不変・セッション状態変化なし・会話履歴から除外
+const DEVINFO_RE = /^[/\\]?devinfo$/i;
+
 // ── Main event handler ────────────────────────────────────────────────────
 async function handleEvent(event, client) {
   if (event.type !== 'message' || event.message.type !== 'text') return;
@@ -55,6 +60,21 @@ async function handleEvent(event, client) {
   const text        = event.message.text.trim();
   const msgId       = event.message.id;
   const quotedMsgId = event.message.quotedMessageId ?? null;
+
+  // ── 0. devInfo — 開発者用IDダンプ（ぽみすけ会話と完全分離） ─────────────
+  // /devInfo, \devInfo, devinfo を受け取ったら送信者userId・グループIDを返す。
+  // store は一切操作しない。このメッセージは会話履歴・コンパクションに含まれない。
+  if (DEVINFO_RE.test(text)) {
+    const groupId = event.source.groupId ?? event.source.roomId ?? null;
+    const lines = [`[devInfo] userId: ${userId}`];
+    if (groupId) lines.push(`[devInfo] groupId: ${groupId}`);
+    console.log(lines.join(' / '));
+    await client.replyMessage({
+      replyToken: event.replyToken,
+      messages: [{ type: 'text', text: lines.join('\n') }]
+    });
+    return;
+  }
 
   // ── 1. リマインダーボタン ────────────────────────────────────────────────
   if (text === 'リマインダー') {
