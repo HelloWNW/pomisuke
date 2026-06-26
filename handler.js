@@ -5,11 +5,22 @@ const { groq, chatWithPomisuke } = require('./groq');
 // 対応: ぽよマスター / ポヨマスター / ぽよますたー / ぽよますた / ポヨマスタ / ぽよマスタ
 const POYOMASTER_RE = /[ぽポ][よヨ][まマ][すス][たタ][ーー]?/;
 
+// ── devInfo trigger ───────────────────────────────────────────────────────
+const DEVINFO_RE = /^[/\\]?devinfo$/i;
+
+// ── Logger ────────────────────────────────────────────────────────────────
+// prefix は [INFO] / [DEVINFO] / [WARN] / [ERROR] など
+function log(prefix, userId, groupId, msg) {
+  const uid = userId  ? `uid=${userId}`   : null;
+  const gid = groupId ? `gid=${groupId}`  : null;
+  const ctx = [uid, gid].filter(Boolean).join(' ');
+  console.log(`[${prefix}]${ctx ? ' ' + ctx : ''} ${msg}`);
+}
+
 // ── Trigger detection ─────────────────────────────────────────────────────
 
 function isMenuTrigger(text) {
   if (typeof text !== 'string') return false;
-  // /ぽよマスター 系 or @ぽみすけ or @ぽよすけ
   return (
     POYOMASTER_RE.test(text) ||
     text.includes('@ぽみすけ') ||
@@ -22,7 +33,7 @@ function stripMention(text) {
     .replace(/@ぽみすけ/g, '')
     .replace(/@ぽよすけ/g, '')
     .replace(POYOMASTER_RE, '')
-    .replace(/^[/／]/, '')   // 先頭のスラッシュ除去
+    .replace(/^[/／]/, '')
     .trim();
 }
 
@@ -47,37 +58,69 @@ function buildMenuMessage() {
   };
 }
 
-// ── devInfo trigger ───────────────────────────────────────────────────────
-// /devInfo, \devInfo, devinfo (大文字小文字不問) でuserIdとgroupIdをログ返答
-// ぽみすけとは無関係: store不変・セッション状態変化なし・会話履歴から除外
-const DEVINFO_RE = /^[/\\]?devinfo$/i;
+// ── グループメンバーID全件取得（ページネーション対応） ────────────────────
+async function fetchAllMemberIds(client, groupId) {
+  const ids = [];
+  let start = undefined;
+  do {
+    const res = await client.getGroupMembersIds(groupId, start);
+    if (res.memberIds) ids.push(...res.memberIds);
+    start = res.next ?? null;
+  } while (start);
+  return ids;
+}
 
 // ── Main event handler ────────────────────────────────────────────────────
 async function handleEvent(event, client) {
   if (event.type !== 'message' || event.message.type !== 'text') return;
 
   const userId      = event.source.userId;
+  const groupId     = event.source.groupId ?? event.source.roomId ?? null;
+  const sourceType  = event.source.type;           // 'user' | 'group' | 'room'
   const text        = event.message.text.trim();
   const msgId       = event.message.id;
   const quotedMsgId = event.message.quotedMessageId ?? null;
 
+  log('INFO', userId, groupId, `[${sourceType}] recv: "${text}"`);
+
   // ── 0. devInfo — 開発者用IDダンプ（ぽみすけ会話と完全分離） ─────────────
-  // /devInfo, \devInfo, devinfo を受け取ったら送信者userId・グループIDを返す。
-  // store は一切操作しない。このメッセージは会話履歴・コンパクションに含まれない。
+  // store は一切操作しない。会話履歴・コンパクションに含まれない。
   if (DEVINFO_RE.test(text)) {
-    const groupId = event.source.groupId ?? event.source.roomId ?? null;
-    const lines = [`[devInfo] userId: ${userId}`];
-    if (groupId) lines.push(`[devInfo] groupId: ${groupId}`);
-    console.log(lines.join(' / '));
+    log('DEVINFO', userId, groupId, 'devInfo triggered');
+
+    const lines = [];
+
+    if (groupId) {
+      // グループ/ルーム: メンバー全員のIDを取得して列挙
+      lines.push(`groupId: ${groupId}`);
+      try {
+        const memberIds = await fetchAllMemberIds(client, groupId);
+        log('DEVINFO', userId, groupId, `member count: ${memberIds.length}`);
+        memberIds.forEach((mid, i) => {
+          lines.push(`  member[${i}] userId: ${mid}`);
+        });
+      } catch (err) {
+        log('ERROR', userId, groupId, `getGroupMembersIds failed: ${err.message}`);
+        lines.push(`  (メンバーID取得失敗: ${err.message})`);
+      }
+    } else {
+      // 個人チャット
+      lines.push(`userId: ${userId}`);
+    }
+
+    const replyText = lines.join('\n');
+    console.log(`[DEVINFO] reply:\n${replyText}`);
+
     await client.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: lines.join('\n') }]
+      messages: [{ type: 'text', text: replyText }]
     });
     return;
   }
 
   // ── 1. リマインダーボタン ────────────────────────────────────────────────
   if (text === 'リマインダー') {
+    log('INFO', userId, groupId, 'reminder button tapped');
     await client.replyMessage({
       replyToken: event.replyToken,
       messages: [{ type: 'text', text: 'リマインダーはまだ準備中だぷよ…もうちょっと待ってほしいぽみねえ！🙏' }]
@@ -91,6 +134,7 @@ async function handleEvent(event, client) {
 
     if (stripped.length === 0) {
       // メンションのみ → メニュー表示
+      log('INFO', userId, groupId, 'mention-only → menu');
       store.startSession(userId);
       await client.replyMessage({
         replyToken: event.replyToken,
@@ -101,11 +145,13 @@ async function handleEvent(event, client) {
       });
     } else {
       // メンション + テキスト → チャットセッション開始
+      log('INFO', userId, groupId, `mention+text → chat start: "${stripped}"`);
       store.startSession(userId);
       store.setLastPomisukeLineId(userId, msgId);
       store.addUserMessage(userId, stripped);
 
       const reply = await chatWithPomisuke(store.getMessagesForAPI(userId));
+      log('INFO', userId, groupId, `pomisuke reply: "${reply}"`);
       store.addAssistantMessage(userId, reply);
 
       await client.replyMessage({
@@ -113,16 +159,16 @@ async function handleEvent(event, client) {
         messages: [{ type: 'text', text: reply }]
       });
 
-      await store.maybeCompact(userId, groq);
+      const compacted = await store.maybeCompact(userId, groq);
+      if (compacted) log('INFO', userId, groupId, 'session compacted');
     }
     return;
   }
 
   // ── 3. ぽみすけのメッセージへの返信のみ反応 ─────────────────────────────
-  // quotedMsgId がぽみすけ発言のIDと一致する場合だけ応答。
-  // 他ユーザーのメッセージへの返信は無視。
   if (quotedMsgId && store.isPomisukeMsg(userId, quotedMsgId)) {
     if (!store.isActive(userId)) {
+      log('INFO', userId, groupId, 'reply to pomisuke but session inactive');
       await client.replyMessage({
         replyToken: event.replyToken,
         messages: [{ type: 'text', text: 'セッションが終わってるぽみ…@ぽみすけ か /ぽよマスター で呼んでぷよ！' }]
@@ -130,8 +176,10 @@ async function handleEvent(event, client) {
       return;
     }
 
+    log('INFO', userId, groupId, `reply-chain: "${text}"`);
     store.addUserMessage(userId, text);
     const reply = await chatWithPomisuke(store.getMessagesForAPI(userId));
+    log('INFO', userId, groupId, `pomisuke reply: "${reply}"`);
     store.addAssistantMessage(userId, reply);
 
     await client.replyMessage({
@@ -139,12 +187,13 @@ async function handleEvent(event, client) {
       messages: [{ type: 'text', text: reply }]
     });
 
-    await store.maybeCompact(userId, groq);
+    const compacted = await store.maybeCompact(userId, groq);
+    if (compacted) log('INFO', userId, groupId, 'session compacted');
     return;
   }
 
   // ── それ以外は全て無視 ──────────────────────────────────────────────────
-  // 他ユーザーのメッセージへの返信・通常のグループ発言はスルー
+  log('INFO', userId, groupId, 'ignored (no trigger matched)');
 }
 
 module.exports = { handleEvent };
