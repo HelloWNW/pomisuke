@@ -6,14 +6,14 @@ const { groq, chatWithPomisuke } = require('./groq');
 const POYOMASTER_RE = /[ぽポ][よヨ][まマ][すス][たタ][ーー]?/;
 
 // ── devInfo trigger ───────────────────────────────────────────────────────
+// /devInfo, \devInfo, devinfo (大文字小文字不問)
 const DEVINFO_RE = /^[/\\]?devinfo$/i;
 
 // ── Logger ────────────────────────────────────────────────────────────────
-// prefix は [INFO] / [DEVINFO] / [WARN] / [ERROR] など
-function log(prefix, userId, groupId, msg) {
-  const uid = userId  ? `uid=${userId}`   : null;
-  const gid = groupId ? `gid=${groupId}`  : null;
-  const ctx = [uid, gid].filter(Boolean).join(' ');
+function log(prefix, userId, sessionId, msg) {
+  const uid = userId    ? `uid=${userId}`       : null;
+  const sid = sessionId ? `sid=${sessionId}`    : null;
+  const ctx = [uid, sid].filter(Boolean).join(' ');
   console.log(`[${prefix}]${ctx ? ' ' + ctx : ''} ${msg}`);
 }
 
@@ -21,7 +21,9 @@ function log(prefix, userId, groupId, msg) {
 
 function isMenuTrigger(text) {
   if (typeof text !== 'string') return false;
+  // /ぽよマスター系 (先頭に / \ ／ があってもなくても) or @ぽみすけ or @ぽよすけ
   return (
+    /^[/\\／]/.test(text) && POYOMASTER_RE.test(text) ||
     POYOMASTER_RE.test(text) ||
     text.includes('@ぽみすけ') ||
     text.includes('@ぽよすけ')
@@ -33,7 +35,7 @@ function stripMention(text) {
     .replace(/@ぽみすけ/g, '')
     .replace(/@ぽよすけ/g, '')
     .replace(POYOMASTER_RE, '')
-    .replace(/^[/／]/, '')
+    .replace(/^[/\\／]/, '')
     .trim();
 }
 
@@ -58,50 +60,45 @@ function buildMenuMessage() {
   };
 }
 
-// ── グループメンバーID全件取得（ページネーション対応） ────────────────────
-async function fetchAllMemberIds(client, groupId) {
-  const ids = [];
-  let start = undefined;
-  do {
-    const res = await client.getGroupMembersIds(groupId, start);
-    if (res.memberIds) ids.push(...res.memberIds);
-    start = res.next ?? null;
-  } while (start);
-  return ids;
-}
-
 // ── Main event handler ────────────────────────────────────────────────────
 async function handleEvent(event, client) {
   if (event.type !== 'message' || event.message.type !== 'text') return;
 
-  const userId      = event.source.userId;
-  const groupId     = event.source.groupId ?? event.source.roomId ?? null;
-  const sourceType  = event.source.type;           // 'user' | 'group' | 'room'
-  const text        = event.message.text.trim();
-  const msgId       = event.message.id;
+  const userId     = event.source.userId;
+  const sessionId  = store.constructor.resolveSessionId(event.source); // group/room → groupId, DM → userId
+  const sourceType = event.source.type;          // 'user' | 'group' | 'room'
+  const text       = event.message.text.trim();
+  const msgId      = event.message.id;
   const quotedMsgId = event.message.quotedMessageId ?? null;
 
-  log('INFO', userId, groupId, `[${sourceType}] recv: "${text}"`);
+  log('INFO', userId, sessionId, `[${sourceType}] recv: "${text}"`);
 
   // ── 0. devInfo — 開発者用IDダンプ（ぽみすけ会話と完全分離） ─────────────
   // store は一切操作しない。会話履歴・コンパクションに含まれない。
   if (DEVINFO_RE.test(text)) {
-    log('DEVINFO', userId, groupId, 'devInfo triggered');
+    log('DEVINFO', userId, sessionId, 'triggered');
 
+    const groupId = event.source.groupId ?? event.source.roomId ?? null;
     const lines = [];
 
     if (groupId) {
-      // グループ/ルーム: メンバー全員のIDを取得して列挙
       lines.push(`groupId: ${groupId}`);
+      // グループメンバー全員取得を試みる（403等で失敗した場合は送信者IDのみ返す）
       try {
-        const memberIds = await fetchAllMemberIds(client, groupId);
-        log('DEVINFO', userId, groupId, `member count: ${memberIds.length}`);
-        memberIds.forEach((mid, i) => {
-          lines.push(`  member[${i}] userId: ${mid}`);
-        });
+        const ids = [];
+        let start = undefined;
+        do {
+          const res = await client.getGroupMembersIds(groupId, start);
+          if (res.memberIds) ids.push(...res.memberIds);
+          start = res.next ?? null;
+        } while (start);
+
+        log('DEVINFO', userId, sessionId, `member count: ${ids.length}`);
+        ids.forEach((mid, i) => lines.push(`  member[${i}] userId: ${mid}`));
       } catch (err) {
-        log('ERROR', userId, groupId, `getGroupMembersIds failed: ${err.message}`);
-        lines.push(`  (メンバーID取得失敗: ${err.message})`);
+        // 403など取得不可 → 送信者IDだけ返す（前回仕様にフォールバック）
+        log('WARN', userId, sessionId, `getGroupMembersIds failed (${err.message}), fallback to sender only`);
+        lines.push(`userId (sender): ${userId}`);
       }
     } else {
       // 個人チャット
@@ -109,8 +106,7 @@ async function handleEvent(event, client) {
     }
 
     const replyText = lines.join('\n');
-    console.log(`[DEVINFO] reply:\n${replyText}`);
-
+    log('DEVINFO', userId, sessionId, `reply:\n${replyText}`);
     await client.replyMessage({
       replyToken: event.replyToken,
       messages: [{ type: 'text', text: replyText }]
@@ -120,7 +116,7 @@ async function handleEvent(event, client) {
 
   // ── 1. リマインダーボタン ────────────────────────────────────────────────
   if (text === 'リマインダー') {
-    log('INFO', userId, groupId, 'reminder button tapped');
+    log('INFO', userId, sessionId, 'reminder button tapped');
     await client.replyMessage({
       replyToken: event.replyToken,
       messages: [{ type: 'text', text: 'リマインダーはまだ準備中だぷよ…もうちょっと待ってほしいぽみねえ！🙏' }]
@@ -134,8 +130,8 @@ async function handleEvent(event, client) {
 
     if (stripped.length === 0) {
       // メンションのみ → メニュー表示
-      log('INFO', userId, groupId, 'mention-only → menu');
-      store.startSession(userId);
+      log('INFO', userId, sessionId, 'mention-only → menu');
+      store.startSession(sessionId);
       await client.replyMessage({
         replyToken: event.replyToken,
         messages: [
@@ -145,30 +141,31 @@ async function handleEvent(event, client) {
       });
     } else {
       // メンション + テキスト → チャットセッション開始
-      log('INFO', userId, groupId, `mention+text → chat start: "${stripped}"`);
-      store.startSession(userId);
-      store.setLastPomisukeLineId(userId, msgId);
-      store.addUserMessage(userId, stripped);
+      log('INFO', userId, sessionId, `mention+text → chat start: "${stripped}"`);
+      store.startSession(sessionId);
+      store.setLastPomisukeLineId(sessionId, msgId);
+      store.addUserMessage(sessionId, stripped);
 
-      const reply = await chatWithPomisuke(store.getMessagesForAPI(userId));
-      log('INFO', userId, groupId, `pomisuke reply: "${reply}"`);
-      store.addAssistantMessage(userId, reply);
+      const reply = await chatWithPomisuke(store.getMessagesForAPI(sessionId));
+      log('INFO', userId, sessionId, `pomisuke reply: "${reply}"`);
+      store.addAssistantMessage(sessionId, reply);
 
       await client.replyMessage({
         replyToken: event.replyToken,
         messages: [{ type: 'text', text: reply }]
       });
 
-      const compacted = await store.maybeCompact(userId, groq);
-      if (compacted) log('INFO', userId, groupId, 'session compacted');
+      const compacted = await store.maybeCompact(sessionId, groq);
+      if (compacted) log('INFO', userId, sessionId, 'session compacted');
     }
     return;
   }
 
-  // ── 3. ぽみすけのメッセージへの返信のみ反応 ─────────────────────────────
-  if (quotedMsgId && store.isPomisukeMsg(userId, quotedMsgId)) {
-    if (!store.isActive(userId)) {
-      log('INFO', userId, groupId, 'reply to pomisuke but session inactive');
+  // ── 3. ぽみすけのメッセージへの返信で会話継続 ───────────────────────────
+  // 誰が返信してもセッション継続（userIdではなくsessionId単位で管理）
+  if (quotedMsgId && store.isPomisukeMsg(sessionId, quotedMsgId)) {
+    if (!store.isActive(sessionId)) {
+      log('INFO', userId, sessionId, 'reply to pomisuke but session inactive');
       await client.replyMessage({
         replyToken: event.replyToken,
         messages: [{ type: 'text', text: 'セッションが終わってるぽみ…@ぽみすけ か /ぽよマスター で呼んでぷよ！' }]
@@ -176,24 +173,24 @@ async function handleEvent(event, client) {
       return;
     }
 
-    log('INFO', userId, groupId, `reply-chain: "${text}"`);
-    store.addUserMessage(userId, text);
-    const reply = await chatWithPomisuke(store.getMessagesForAPI(userId));
-    log('INFO', userId, groupId, `pomisuke reply: "${reply}"`);
-    store.addAssistantMessage(userId, reply);
+    log('INFO', userId, sessionId, `reply-chain: "${text}"`);
+    store.addUserMessage(sessionId, text);
+    const reply = await chatWithPomisuke(store.getMessagesForAPI(sessionId));
+    log('INFO', userId, sessionId, `pomisuke reply: "${reply}"`);
+    store.addAssistantMessage(sessionId, reply);
 
     await client.replyMessage({
       replyToken: event.replyToken,
       messages: [{ type: 'text', text: reply }]
     });
 
-    const compacted = await store.maybeCompact(userId, groq);
-    if (compacted) log('INFO', userId, groupId, 'session compacted');
+    const compacted = await store.maybeCompact(sessionId, groq);
+    if (compacted) log('INFO', userId, sessionId, 'session compacted');
     return;
   }
 
   // ── それ以外は全て無視 ──────────────────────────────────────────────────
-  log('INFO', userId, groupId, 'ignored (no trigger matched)');
+  log('INFO', userId, sessionId, 'ignored (no trigger matched)');
 }
 
 module.exports = { handleEvent };
