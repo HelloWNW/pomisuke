@@ -1,4 +1,7 @@
-
+/**
+ * notify.js
+ * Builds LINE textV2 push messages for GAS webhook notifications.
+ */
 
 // ── User registry (resolved at runtime from env) ──────────────────────────
 function getUserRegistry() {
@@ -26,19 +29,23 @@ function textV2(text, subs = {}) {
   return { type: 'textV2', text, substitution: filtered };
 }
 
+/** Format integer with commas. */
 function fmt(n) {
   if (n == null || n === '') return '';
   return Number(n).toLocaleString('ja-JP');
 }
 
+/** Format fuel to fixed 2 decimal places (no commas). */
 function fmtFuel(n) {
   if (n == null || n === '') return '';
   return Number(n).toFixed(2);
 }
 
-// ══════════════════════════════════════════════════════════════════════════
-// CARSHARE TEMPLATES
-// ══════════════════════════════════════════════════════════════════════════
+/** Format efficiency to fixed 1 decimal place. */
+function fmtEff(n) {
+  if (n == null || n === '') return '';
+  return Number(n).toFixed(1);
+}
 
 function buildCarStart(data) {
   const { userKeys = [], startOdo, startTime } = data;
@@ -78,7 +85,7 @@ function buildCarReturn(data) {
     `\n` +
     `走行距離:\n` +
     `　${fmt(startOdo)} → ${fmt(endOdo)} km（+${fmt(distance)} km）\n` +
-    `燃費　　: ${efficiency} km/L\n` +
+    `燃費　　: ${fmtEff(efficiency)} km/L\n` +
     `返却時刻: ${endTime}`,
     subs
   );
@@ -92,10 +99,13 @@ function buildCarRefuel(data) {
     subs[`u_${key}`] = mentionEntry(resolveUserId(key));
   });
 
+  const maxPctLen = Math.max(...breakdown.map(b => `${b.pct}%`.length));
+
   const lines = breakdown.map(({ key, fuel, pct, isRefueler, owe }) => {
-    const marker = isRefueler ? '*' : '';
-    const oweStr = owe != null ? `  ${fmt(owe)}円` : '';
-    return `{u_${key}}${marker}\n　${fmtFuel(fuel)} L（${pct}%）-${oweStr}`;
+    const marker  = isRefueler ? '*' : ' ';
+    const pctStr  = `${pct}%`.padEnd(maxPctLen, '\u2005'); // narrow no-break space
+    const oweStr  = owe != null ? `${fmt(owe)}円` : '';
+    return `{u_${key}}${marker}\n　${fmtFuel(fuel)} L（${pctStr}）-  ${oweStr}`;
   });
 
   return textV2(
@@ -103,7 +113,7 @@ function buildCarRefuel(data) {
     `━━━━━━━━━━━━\n` +
     `給油者　　: {refueler}\n` +
     `金額　　　: ${fmt(amount)}円\n` +
-    `使用燃料量: ${totalFuel} L\n` +
+    `使用燃料量: ${fmtFuel(totalFuel)} L\n` +
     `\n` +
     lines.join('\n'),
     subs
@@ -113,8 +123,8 @@ function buildCarRefuel(data) {
 function buildCarRewrite(data) {
   const { requesterKey, before, after, changes = [] } = data;
 
+  // Strip the label's trailing colon; format as "・label\n　　value"
   const changeLines = changes.map(c => {
-    // Strip trailing colon from label if present: "使用者: X" → "使用者\n　　X"
     const colonIdx = c.indexOf(':');
     if (colonIdx !== -1) {
       const label = c.slice(0, colonIdx).trim();
@@ -126,8 +136,13 @@ function buildCarRewrite(data) {
 
   function fmtTrip(t) {
     if (!t) return '　(データなし)';
-    const eff = t.eff != null ? Number(t.eff).toFixed(1) : '?';
-    return `　${t.time}\n　${t.users}\n　${fmt(t.startOdo)}→${fmt(t.endOdo)}km\n　${eff} km/L`;
+    const eff = t.eff != null ? fmtEff(t.eff) : '?';
+    return (
+      `　${t.time}\n` +
+      `　${t.users}\n` +
+      `　${fmt(t.startOdo)}→${fmt(t.endOdo)}km\n` +
+      `　${eff} km/L`
+    );
   }
 
   return textV2(
@@ -190,7 +205,12 @@ function buildLedgerRewrite(data) {
   function fmtRecord(r) {
     if (!r) return '　(データなし)';
     const suffix = r.id ? ` [${r.id}]` : '';
-    return `　${r.time}\n　${r.lender}→${r.borrowers}\n　${fmt(r.amount)}円\n　${r.purpose}${suffix}`;
+    return (
+      `　${r.time}\n` +
+      `　${r.lender}→${r.borrowers}\n` +
+      `　${fmt(r.amount)}円\n` +
+      `　${r.purpose}${suffix}`
+    );
   }
 
   return textV2(
@@ -213,14 +233,12 @@ function buildLedgerRewrite(data) {
 // ══════════════════════════════════════════════════════════════════════════
 
 function buildError(data) {
-  const { source, message, context } = data;
-  const sourceLabel = source === 'carshare' ? 'カーシェア' : source === 'ledger' ? '貸借対照表' : source;
-  const contextLine = context ? `操作: ${context}\n` : '';
+  const { source, message } = data;
+  const sourceLabel = source === 'carshare' ? 'カーシェア' : '貸借対照表';
   return textV2(
-    `⚠️ ${sourceLabel}でエラーが発生したｺﾃ！\n` +
+    `⚠️ ${sourceLabel}でエラーぷよ\n` +
     `━━━━━━━━━━━━\n` +
-    `${contextLine}` +
-    `エラー:\n${message}`
+    `${message}`
   );
 }
 
