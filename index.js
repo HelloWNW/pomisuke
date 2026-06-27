@@ -1,5 +1,4 @@
 require('dotenv').config();
-
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { handleEvent } = require('./handler');
@@ -18,9 +17,14 @@ const client = new line.messagingApi.MessagingApiClient({
 // ── Express app ───────────────────────────────────────────────────────────
 const app = express();
 
-// Health check
+// Root
 app.get('/', (req, res) => {
   res.send('ぽみすけ bot is running ぷよ！');
+});
+
+// Health check（GAS・UptimeRobot のping用）
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
 // LINE webhook — raw body required for signature verification
@@ -55,7 +59,6 @@ app.post('/gas-notify', async (req, res) => {
 
   const { app: gasApp, event, data } = req.body;
   const groupId = process.env.LINE_GROUP_ID;
-
   if (!groupId) {
     console.error('gas-notify: LINE_GROUP_ID not set');
     return res.sendStatus(500);
