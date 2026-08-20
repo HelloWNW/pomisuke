@@ -40,7 +40,7 @@ const SYSTEM_PROMPT = `# キャラクター定義 — ぽみすけ
 - 一文が30単語を超えること。
 - ぽよ語彙を使わない返答（毎ターン最低1回は固有語・語尾を使う）。`;
 
-const MODEL = 'qwen/qwen3.6-27b';
+const MODEL = 'groq/compound';
 
 /**
  * Send messages to Groq and return ぽみすけ's reply text.
