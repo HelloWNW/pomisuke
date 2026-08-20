@@ -8,14 +8,12 @@
  * Structure per session:
  *   sessions[sessionId] = {
  *     active: true/false,
- *     messages: [{ role, content }],
- *     compactedSummary: string|null,
- *     pomisukeMsgIds: Set<string>,   // ぽみすけが送ったLINEメッセージID
- *     lastPomisukeLineId: string|null
+ *     messages: [{ role, content }],   // 直近 MAX_HISTORY 件のみ保持（スライディングウィンドウ）
+ *     pomisukeMsgIds: Set<string>       // ぽみすけが送ったLINEメッセージID（返信チェーン判定用）
  *   }
  */
 
-const MAX_MESSAGES = 6;
+const MAX_HISTORY = 10; // ぽみすけ5件 + ユーザー5件
 
 class ConversationStore {
   constructor() {
@@ -32,9 +30,7 @@ class ConversationStore {
       this.sessions[sessionId] = {
         active: false,
         messages: [],
-        compactedSummary: null,
-        pomisukeMsgIds: new Set(),
-        lastPomisukeLineId: null
+        pomisukeMsgIds: new Set()
       };
     }
     return this.sessions[sessionId];
@@ -44,9 +40,7 @@ class ConversationStore {
     this.sessions[sessionId] = {
       active: true,
       messages: [],
-      compactedSummary: null,
-      pomisukeMsgIds: new Set(),
-      lastPomisukeLineId: null
+      pomisukeMsgIds: new Set()
     };
     return this.sessions[sessionId];
   }
@@ -65,60 +59,27 @@ class ConversationStore {
     return s ? s.pomisukeMsgIds.has(msgId) : false;
   }
 
+  _trim(session) {
+    if (session.messages.length > MAX_HISTORY) {
+      session.messages = session.messages.slice(-MAX_HISTORY);
+    }
+  }
+
   addUserMessage(sessionId, content) {
-    this._init(sessionId).messages.push({ role: 'user', content });
+    const s = this._init(sessionId);
+    s.messages.push({ role: 'user', content });
+    this._trim(s);
   }
 
   addAssistantMessage(sessionId, content) {
-    this._init(sessionId).messages.push({ role: 'assistant', content });
+    const s = this._init(sessionId);
+    s.messages.push({ role: 'assistant', content });
+    this._trim(s);
   }
 
   getMessagesForAPI(sessionId) {
     const s = this.sessions[sessionId];
-    if (!s) return [];
-    const msgs = [];
-    if (s.compactedSummary) {
-      msgs.push({ role: 'user',      content: `[過去の会話の要約]\n${s.compactedSummary}` });
-      msgs.push({ role: 'assistant', content: 'わかったぷよ〜！過去のこと覚えてるぽみねえ。' });
-    }
-    return [...msgs, ...s.messages];
-  }
-
-  async maybeCompact(sessionId, groqClient) {
-    const s = this.sessions[sessionId];
-    if (!s) return false;
-
-    const userTurns = s.messages.filter(m => m.role === 'user').length;
-    if (userTurns < MAX_MESSAGES) return false;
-
-    const historyText = s.messages
-      .map(m => `${m.role === 'user' ? 'ユーザー' : 'ぽみすけ'}: ${m.content}`)
-      .join('\n');
-    const previousSummary = s.compactedSummary
-      ? `[前回の要約]\n${s.compactedSummary}\n\n`
-      : '';
-
-    try {
-      const res = await groqClient.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{
-          role: 'user',
-          content: `以下の会話を、ぽみすけ（AIキャラ）との重要なやりとり・話題・ユーザーの好みや状況を保持しつつ、200字以内の日本語で要約してください。要約のみ出力してください。\n\n${previousSummary}[今回の会話]\n${historyText}`
-        }],
-        max_tokens: 300,
-        temperature: 0.3
-      });
-      s.compactedSummary = res.choices[0]?.message?.content?.trim() ?? '';
-      s.messages = [];
-      return true;
-    } catch (e) {
-      console.error('Compaction error:', e);
-      return false;
-    }
-  }
-
-  setLastPomisukeLineId(sessionId, msgId) {
-    this._init(sessionId).lastPomisukeLineId = msgId;
+    return s ? s.messages : [];
   }
 
   getSession(sessionId) {

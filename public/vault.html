@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ぽみすけ Knowledge Vault</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #1a1a1e;
+    --panel: #232328;
+    --border: #35353d;
+    --text: #e8e8ec;
+    --muted: #9a9aa5;
+    --world: #7aa2f7;
+    --autolog: #f7b26a;
+    --missing: #555560;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif; }
+  #app { display: flex; height: 100vh; }
+  #graph { flex: 1 1 60%; min-width: 0; border-right: 1px solid var(--border); }
+  #panel { flex: 1 1 40%; min-width: 280px; max-width: 480px; overflow-y: auto; padding: 24px; background: var(--panel); }
+  #panel h2 { margin-top: 0; font-size: 1.1rem; color: var(--muted); }
+  #panel .placeholder { color: var(--muted); }
+  #note-content a { color: var(--world); }
+  #note-content code { background: #00000030; padding: 0 4px; border-radius: 3px; }
+  .legend { position: absolute; top: 12px; left: 12px; font-size: 0.8rem; color: var(--muted); display: flex; gap: 14px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  #wrap { position: relative; flex: 1 1 60%; min-width: 0; border-right: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="wrap">
+    <div class="legend">
+      <span><i class="dot" style="background:var(--world)"></i>world-setting</span>
+      <span><i class="dot" style="background:var(--autolog)"></i>auto-log</span>
+      <span><i class="dot" style="background:var(--missing)"></i>missing</span>
+    </div>
+    <div id="graph"></div>
+  </div>
+  <div id="panel">
+    <h2 id="note-title">Note</h2>
+    <div id="note-content" class="placeholder">Click a node to view its contents.</div>
+  </div>
+</div>
+
+<script>
+const COLORS = { 'world-setting': getComputedStyle(document.documentElement).getPropertyValue('--world'),
+                  'auto-log': getComputedStyle(document.documentElement).getPropertyValue('--autolog'),
+                  missing: getComputedStyle(document.documentElement).getPropertyValue('--missing') };
+
+function wikilinksToMdLinks(markdown) {
+  return markdown.replace(/\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]/g, (_, target, alias) => `[${alias || target}](#${target})`);
+}
+
+let nodeMeta = new Map();
+
+async function loadGraph() {
+  const res = await fetch('/api/vault/graph');
+  if (!res.ok) throw new Error('failed to load graph');
+  const { nodes, edges } = await res.json();
+
+  const visNodes = new vis.DataSet(nodes.map(n => ({
+    id: n.id,
+    label: n.label,
+    color: n.missing ? COLORS.missing : COLORS[n.folder],
+    shape: 'dot',
+    size: 14,
+    font: { color: '#e8e8ec' }
+  })));
+  const visEdges = new vis.DataSet(edges.map(e => ({ from: e.from, to: e.to, color: { color: '#55555f' }, arrows: 'to' })));
+
+  const network = new vis.Network(document.getElementById('graph'), { nodes: visNodes, edges: visEdges }, {
+    physics: { solver: 'forceAtlas2Based', stabilization: { iterations: 150 } },
+    interaction: { hover: true }
+  });
+
+  nodeMeta = new Map(nodes.map(n => [n.id, n]));
+  network.on('click', params => {
+    if (params.nodes.length) loadNote(nodeMeta.get(params.nodes[0]));
+  });
+}
+
+async function loadNote(node) {
+  const titleEl = document.getElementById('note-title');
+  const contentEl = document.getElementById('note-content');
+  if (!node || node.missing) {
+    titleEl.textContent = node ? node.id : 'Note';
+    contentEl.innerHTML = '<p class="placeholder">This note doesn\\'t exist yet.</p>';
+    return;
+  }
+  titleEl.textContent = node.id;
+  contentEl.innerHTML = '<p class="placeholder">Loading…</p>';
+  try {
+    const res = await fetch(`/api/vault/notes/${node.folder}/${node.id}.md`);
+    if (!res.ok) throw new Error('not found');
+    const { content } = await res.json();
+    contentEl.innerHTML = marked.parse(wikilinksToMdLinks(content));
+  } catch (err) {
+    contentEl.innerHTML = '<p class="placeholder">Failed to load note.</p>';
+  }
+}
+
+document.getElementById('note-content').addEventListener('click', e => {
+  const a = e.target.closest('a[href^="#"]');
+  if (!a) return;
+  e.preventDefault();
+  const target = decodeURIComponent(a.getAttribute('href').slice(1)).split('/').pop();
+  loadNote(nodeMeta.get(target) || { id: target, missing: true });
+});
+
+loadGraph().catch(err => {
+  document.getElementById('graph').innerHTML = `<p style="padding:24px;color:var(--muted)">Failed to load graph: ${err.message}</p>`;
+});
+</script>
+</body>
+</html>

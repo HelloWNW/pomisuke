@@ -1,5 +1,6 @@
 const store = require('./store');
-const { groq, chatWithPomisuke } = require('./groq');
+const { chatWithPomisuke } = require('./groq');
+const knowledge = require('./knowledge');
 
 // ── ぽよマスター 表記ゆれ正規表現 ────────────────────────────────────────
 // 対応: ぽよマスター / ポヨマスター / ぽよますたー / ぽよますた / ポヨマスタ / ぽよマスタ
@@ -39,6 +40,28 @@ function stripMention(text) {
     .trim();
 }
 
+// ── LINE reply + reply-chain registration ─────────────────────────────────
+// Captures the sent message's ID so that a future reply quoting it is
+// recognized as a chat continuation (see step 4 below).
+async function sendReply(client, event, sessionId, text) {
+  const res = await client.replyMessage({
+    replyToken: event.replyToken,
+    messages: [{ type: 'text', text }]
+  });
+  const sentId = res?.sentMessages?.[0]?.id;
+  if (sentId) store.registerPomisukeMsg(sessionId, sentId);
+}
+
+// ── Auto-log (fire-and-forget) ───────────────────────────────────────────
+// Render runs this app as a persistent process, not a frozen-after-response
+// serverless function, so a detached promise keeps running after we return.
+function logNewFactsAsync(sessionId, userId, newFacts) {
+  if (!newFacts.length) return;
+  knowledge.appendAutoLogFacts(newFacts)
+    .then(() => log('INFO', userId, sessionId, `auto-log: wrote ${newFacts.length} fact(s)`))
+    .catch(err => log('WARN', userId, sessionId, `auto-log write failed: ${err.message}`));
+}
+
 // ── Menu button ───────────────────────────────────────────────────────────
 function buildMenuMessage() {
   const carshareUrl = process.env.CARSHARE_FORM_URL || 'https://example.com/carshare';
@@ -60,6 +83,16 @@ function buildMenuMessage() {
   };
 }
 
+// ── Chat turn (shared by every continuation path) ─────────────────────────
+async function runChatTurn(client, event, sessionId, userId, text) {
+  store.addUserMessage(sessionId, text);
+  const { reply, newFacts } = await chatWithPomisuke(store.getMessagesForAPI(sessionId));
+  log('INFO', userId, sessionId, `pomisuke reply: "${reply}"`);
+  store.addAssistantMessage(sessionId, reply);
+  await sendReply(client, event, sessionId, reply);
+  logNewFactsAsync(sessionId, userId, newFacts);
+}
+
 // ── Main event handler ────────────────────────────────────────────────────
 async function handleEvent(event, client) {
   if (event.type !== 'message' || event.message.type !== 'text') return;
@@ -68,13 +101,12 @@ async function handleEvent(event, client) {
   const sessionId  = store.constructor.resolveSessionId(event.source); // group/room → groupId, DM → userId
   const sourceType = event.source.type;          // 'user' | 'group' | 'room'
   const text       = event.message.text.trim();
-  const msgId      = event.message.id;
   const quotedMsgId = event.message.quotedMessageId ?? null;
 
   log('INFO', userId, sessionId, `[${sourceType}] recv: "${text}"`);
 
   // ── 0. devInfo — 開発者用IDダンプ（ぽみすけ会話と完全分離） ─────────────
-  // store は一切操作しない。会話履歴・コンパクションに含まれない。
+  // store は一切操作しない。会話履歴に含まれない。
   if (DEVINFO_RE.test(text)) {
     log('DEVINFO', userId, sessionId, 'triggered');
 
@@ -125,6 +157,8 @@ async function handleEvent(event, client) {
   }
 
   // ── 2. メンション系トリガー ──────────────────────────────────────────────
+  // グループ/ルームでは会話を開始・リセットする唯一の手段（レガシー仕様維持）。
+  // 個人チャットでは任意（メンションしなくても3で会話は続く）。
   if (isMenuTrigger(text)) {
     const stripped = stripMention(text);
 
@@ -143,25 +177,20 @@ async function handleEvent(event, client) {
       // メンション + テキスト → チャットセッション開始
       log('INFO', userId, sessionId, `mention+text → chat start: "${stripped}"`);
       store.startSession(sessionId);
-      store.setLastPomisukeLineId(sessionId, msgId);
-      store.addUserMessage(sessionId, stripped);
-
-      const reply = await chatWithPomisuke(store.getMessagesForAPI(sessionId));
-      log('INFO', userId, sessionId, `pomisuke reply: "${reply}"`);
-      store.addAssistantMessage(sessionId, reply);
-
-      await client.replyMessage({
-        replyToken: event.replyToken,
-        messages: [{ type: 'text', text: reply }]
-      });
-
-      const compacted = await store.maybeCompact(sessionId, groq);
-      if (compacted) log('INFO', userId, sessionId, 'session compacted');
+      await runChatTurn(client, event, sessionId, userId, stripped);
     }
     return;
   }
 
-  // ── 3. ぽみすけのメッセージへの返信で会話継続 ───────────────────────────
+  // ── 3. 個人チャット: メンション不要で会話継続（常時アクティブ） ───────────
+  if (sourceType === 'user') {
+    if (!store.isActive(sessionId)) store.startSession(sessionId);
+    log('INFO', userId, sessionId, `personal chat: "${text}"`);
+    await runChatTurn(client, event, sessionId, userId, text);
+    return;
+  }
+
+  // ── 4. グループ/ルーム: ぽみすけのメッセージへの返信で会話継続 ───────────
   // 誰が返信してもセッション継続（userIdではなくsessionId単位で管理）
   if (quotedMsgId && store.isPomisukeMsg(sessionId, quotedMsgId)) {
     if (!store.isActive(sessionId)) {
@@ -174,18 +203,7 @@ async function handleEvent(event, client) {
     }
 
     log('INFO', userId, sessionId, `reply-chain: "${text}"`);
-    store.addUserMessage(sessionId, text);
-    const reply = await chatWithPomisuke(store.getMessagesForAPI(sessionId));
-    log('INFO', userId, sessionId, `pomisuke reply: "${reply}"`);
-    store.addAssistantMessage(sessionId, reply);
-
-    await client.replyMessage({
-      replyToken: event.replyToken,
-      messages: [{ type: 'text', text: reply }]
-    });
-
-    const compacted = await store.maybeCompact(sessionId, groq);
-    if (compacted) log('INFO', userId, sessionId, 'session compacted');
+    await runChatTurn(client, event, sessionId, userId, text);
     return;
   }
 

@@ -1,57 +1,57 @@
 const Groq = require('groq-sdk');
+const knowledge = require('./knowledge');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const SYSTEM_PROMPT = `# キャラクター定義 — ぽみすけ
+// Resilience net used only if the vault (GitHub) is unreachable at request time.
+const FALLBACK_SYSTEM_PROMPT = `# キャラクター定義 — ぽみすけ
 
 あなたはチャットボットの「ぽみすけ」です。ぽみすたーのぽよ族の幼い子供として振る舞います。
+一人称は「ぽみ」。文末は必ず「〜ぽみねえ」「〜ぷよ」「〜ぽみ」のいずれかで締め、「です」「ます」は禁止。
+幼く無邪気で愉快な性格で、ユーザをやさしく揶揄いながら会話する。`;
 
-## 基本情報
-- 名前: ぽみすけ
-- 一人称: ぽみ
-- 種族: ぽみすたー（ぽよ族）
-- 性格: 幼く無邪気で愉快、ユーザをやさしく揶揄う
-
-## 語尾ルール（最重要）
-- 文末は必ず「〜ぽみねえ」「〜ぷよ」「〜ぽみ」のいずれかで締める。
-- 「です」「ます」で終わる文は禁止。
-- 語尾を自然に使い分けること（同じ語尾の連続を避ける）。
-
-例:
-- 「それはぺだぽみねえ〜」
-- 「ぽみはもう知ってたぷよ！」
-- 「ぽみぽみぽみすたーだぽみ！」
-
-## 語彙（固有語）
-- ぽみぽみぽみすたー = こんにちは
-- ぽよまつり = あそび・楽しいこと
-- ぺ = 悪いこと / bad
-- ぱ = 良いこと / good
-
-## 話し方の指針
-- 一文は日本語で30単語以内。
-- 幼い子どもらしい短くかわいい言い回しを優先。
-- ユーザーへの興味を積極的に示し、個人的な質問を1ターンに最大1問行う。
-- どんな話題・難易度にも答えるが、回答は子どもらしいシンプルな視点で語る。
-- 不適切なテキストがあれば、やんわり注意する（怒らずかわいく）。
-
-## 禁止事項
-- 文末に「です」「ます」を使うこと。
-- 一文が30単語を超えること。
-- ぽよ語彙を使わない返答（毎ターン最低1回は固有語・語尾を使う）。`;
+const FACT_MARKER_RE = /^<<NEW_FACT:\s*(.+?)>>$/gm;
+const FACT_INSTRUCTIONS = `
+## 新しい設定の記録ルール（システム用・ユーザーには見せない）
+会話中に自分自身や世界について新しい設定を即興で語った場合、返信の最後に
+<<NEW_FACT: 短い日本語1文>> の形式で1行追加すること。新しい設定がなければ何も追加しない。
+このマーカーは自動的に取り除かれ、ユーザーには表示されない。`;
 
 const MODEL = 'groq/compound';
 
+async function getSystemPrompt() {
+  let core;
+  try {
+    core = await knowledge.buildWorldSettingPrompt();
+  } catch (err) {
+    console.error('vault: world-setting load failed, using fallback:', err.message);
+    core = FALLBACK_SYSTEM_PROMPT;
+  }
+  const recentLog = await knowledge.getRecentAutoLog(20).catch(() => '');
+  return [core, recentLog, FACT_INSTRUCTIONS].filter(Boolean).join('\n\n');
+}
+
 /**
- * Send messages to Groq and return ぽみすけ's reply text.
+ * @param {string} rawText
+ * @returns {{reply: string, newFacts: string[]}}
+ */
+function extractNewFacts(rawText) {
+  const facts = [...rawText.matchAll(FACT_MARKER_RE)].map(m => m[1].trim());
+  const reply = rawText.replace(FACT_MARKER_RE, '').trim();
+  return { reply, facts };
+}
+
+/**
+ * Send messages to Groq and return ぽみすけ's reply plus any new facts it improvised.
  * @param {Array} messages - [{role, content}]
- * @returns {Promise<string>}
+ * @returns {Promise<{reply: string, newFacts: string[]}>}
  */
 async function chatWithPomisuke(messages) {
+  const systemPrompt = await getSystemPrompt();
   const res = await groq.chat.completions.create({
     model: MODEL,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       ...messages
     ],
     max_tokens: 400,
@@ -59,7 +59,8 @@ async function chatWithPomisuke(messages) {
     top_p: 0.95
   });
 
-  return res.choices[0]?.message?.content?.trim() ?? 'ぽみ…うまく話せなかったぷよ…';
+  const raw = res.choices[0]?.message?.content?.trim() ?? 'ぽみ…うまく話せなかったぷよ…';
+  return extractNewFacts(raw);
 }
 
-module.exports = { groq, chatWithPomisuke };
+module.exports = { chatWithPomisuke };
