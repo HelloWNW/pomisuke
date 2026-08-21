@@ -84,6 +84,12 @@
       </section>
 
       <section>
+        <h2>Fact Reviewer (vault mode only)</h2>
+        <p class="error-text" style="color:var(--muted)">Separate conversation that reads Pomisuke's reply and decides whether to log a new fact — Groq only.</p>
+        <select id="factReviewerModel"></select>
+      </section>
+
+      <section>
         <h2>General Params</h2>
         <label>temperature</label><input type="number" step="0.01" id="p_temperature">
         <label>top_p</label><input type="number" step="0.01" id="p_top_p">
@@ -131,6 +137,7 @@
 <script>
 let secret = null;
 let availableModels = [];
+let reviewerModels = [];
 let liveConfig = null;
 
 function apiFetch(path, options = {}) {
@@ -152,6 +159,7 @@ async function unlock() {
   const data = await res.json();
   liveConfig = data.config;
   availableModels = data.availableModels;
+  reviewerModels = data.reviewerModels;
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   populateModelSelects();
@@ -164,6 +172,7 @@ function populateModelSelects() {
     const sel = document.getElementById(id);
     sel.innerHTML = availableModels.map(m => `<option value="${m}">${m}</option>`).join('');
   }
+  document.getElementById('factReviewerModel').innerHTML = reviewerModels.map(m => `<option value="${m}">${m}</option>`).join('');
 }
 
 function loadDraftOrLive() {
@@ -186,6 +195,7 @@ function discardDraft() {
 function populateForm(cfg) {
   document.querySelector(`input[name=promptMode][value="${cfg.promptMode}"]`).checked = true;
   document.getElementById('defaultModel').value = cfg.defaultModel;
+  document.getElementById('factReviewerModel').value = cfg.factReviewerModel || 'groq/compound';
   document.getElementById('systemPrompt').value = cfg.systemPrompt;
   document.getElementById('p_temperature').value = cfg.generalParams.temperature ?? '';
   document.getElementById('p_top_p').value = cfg.generalParams.top_p ?? '';
@@ -282,6 +292,7 @@ function serializeForm() {
     version: 1,
     promptMode: document.querySelector('input[name=promptMode]:checked').value,
     defaultModel: document.getElementById('defaultModel').value,
+    factReviewerModel: document.getElementById('factReviewerModel').value,
     systemPrompt: document.getElementById('systemPrompt').value,
     generalParams,
     modelOverrides
@@ -389,6 +400,7 @@ function renderDiagnostics(data) {
   const lines = [
     `<span class="label">model:</span> ${data.model}`,
     data.notesRead ? `<span class="label">notesRead:</span> ${data.notesRead.join(', ')}` : null,
+    `<span class="label">newFacts (reviewer):</span> ${data.newFacts?.length ? data.newFacts.join(' / ') : '(none)'}`,
     `<span class="label">reasoning:</span>\n${data.reasoning || '(none returned)'}`
   ].filter(Boolean);
   document.getElementById('diagnostics').innerHTML = lines.join('\n\n');

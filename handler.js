@@ -130,7 +130,12 @@ async function sendReply(client, event, sessionId, text, usePush = false) {
 // ── Auto-log (fire-and-forget) ───────────────────────────────────────────
 // Render runs this app as a persistent process, not a frozen-after-response
 // serverless function, so a detached promise keeps running after we return.
-function logNewFactsAsync(sessionId, userId, newFacts) {
+// newFactsOrPromise may be the still-pending fact-review conversation
+// (chatWithPomisuke kicks it off without awaiting, to avoid delaying the
+// user's reply) — awaiting it here works whether it's already an array or
+// a real Promise.
+async function logNewFactsAsync(sessionId, userId, newFactsOrPromise) {
+  const newFacts = await newFactsOrPromise;
   if (!newFacts?.length) return;
   knowledge.appendAutoLogFacts(newFacts)
     .then(() => log('INFO', userId, sessionId, `auto-log: wrote ${newFacts.length} fact(s)`))

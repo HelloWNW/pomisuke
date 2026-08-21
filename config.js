@@ -18,6 +18,9 @@ const FALLBACK_CONFIG = {
   version: 1,
   promptMode: 'normal',
   defaultModel: 'openai/gpt-oss-120b',
+  // Only consulted in vault mode — the model that reviews Pomisuke's own
+  // replies for new facts, in a separate conversation from the main chat.
+  factReviewerModel: 'groq/compound',
   systemPrompt: `# キャラクター定義 — ぽみすけ
 
 あなたはチャットボットの「ぽみすけ」です。ぽみすたーのぽよ族の幼い子供として振る舞います。

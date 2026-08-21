@@ -4,14 +4,10 @@ const { getConfig } = require('./config');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+// Legacy marker convention — no longer instructed via the system prompt (see
+// reviewReplyForFacts below for the current two-stage approach), but still
+// stripped defensively in case a model emits it anyway out of habit.
 const FACT_MARKER_RE = /^<<NEW_FACT:\s*(.+?)>>$/gm;
-// Only appended in vault mode — makes the (otherwise inert) <<NEW_FACT>>
-// extraction/auto-log pipeline in handler.js active again.
-const FACT_INSTRUCTIONS = `
-## 新しい設定の記録ルール（システム用・ユーザーには見せない）
-会話中に自分自身や世界について新しい設定を即興で語った場合、返信の最後に
-<<NEW_FACT: 短い日本語1文>> の形式で1行追加すること。新しい設定がなければ何も追加しない。
-このマーカーは自動的に取り除かれ、ユーザーには表示されない。`;
 
 // Audio/moderation/TTS models aren't valid chat-completion models — excluded
 // from the selectable list so /model can't be pointed at something that'll
@@ -188,6 +184,47 @@ function isModelError(err) {
   return code === 'model_not_found' || code === 'model_terms_required' || err?.status === 404;
 }
 
+const NONE_RE = /^none$/i;
+
+function factReviewPrompt(userMessage, reply) {
+  return `あなたはキャラクター「ぽみすけ」の発言をレビューする係です。
+ぽみすけへのユーザーの発言と、それに対するぽみすけの返信を確認し、返信の中に
+ぽみすけ自身や世界観について新しく語られた設定（性格・好きなもの・出来事など）が
+含まれているか判定してください。
+
+ユーザー: ${userMessage}
+ぽみすけ: ${reply}
+
+含まれている場合: 新しい設定を日本語1文で簡潔に出力すること（1つにつき1行、前置き不要）。
+含まれていない場合: NONE とだけ出力すること。`;
+}
+
+/**
+ * Second, separate conversation: a reviewer model reads Pomisuke's own reply
+ * (from the main chat call) and decides whether it stated a new fact worth
+ * logging — decoupled from the main persona chat, which no longer needs to
+ * self-report via a marker convention. Groq-only (not the local model, which
+ * is unstable enough already without also acting as a judge). Never throws —
+ * any failure just means no facts get logged for that turn.
+ * @returns {Promise<string[]>}
+ */
+async function reviewReplyForFacts(userMessage, reply, reviewerModel) {
+  try {
+    const res = await groq.chat.completions.create({
+      model: reviewerModel,
+      messages: [{ role: 'user', content: factReviewPrompt(userMessage, reply) }],
+      max_completion_tokens: 200,
+      temperature: 0.3
+    });
+    const text = res.choices[0]?.message?.content?.trim() ?? '';
+    if (!text || NONE_RE.test(text)) return [];
+    return text.split('\n').map(line => line.trim()).filter(Boolean);
+  } catch (err) {
+    console.error(`Fact review failed (model=${reviewerModel}):`, err.message || err);
+    return [];
+  }
+}
+
 /**
  * Builds the system prompt for a turn: the base prompt (static config text,
  * or the vault-composed one in vault mode) plus the chosen model's
@@ -208,7 +245,7 @@ async function buildSystemPrompt(config, override) {
       basePrompt = config.systemPrompt;
     }
     const recentLog = await knowledge.getRecentAutoLog(20).catch(() => '');
-    basePrompt = [basePrompt, recentLog, FACT_INSTRUCTIONS].filter(Boolean).join('\n\n');
+    basePrompt = [basePrompt, recentLog].filter(Boolean).join('\n\n');
   } else {
     basePrompt = config.systemPrompt;
   }
@@ -218,14 +255,19 @@ async function buildSystemPrompt(config, override) {
 }
 
 /**
- * Send messages to Groq (or the local LLM) and return ぽみすけ's reply plus
- * any new facts it improvised.
+ * Send messages to Groq (or the local LLM) and return ぽみすけ's reply. In
+ * vault mode, also kicks off a separate fact-review conversation (see
+ * reviewReplyForFacts) — `newFacts` is the resolved array in debug mode
+ * (so the admin dashboard can show it immediately), or an unresolved Promise
+ * otherwise, so the extra round trip never delays the user-facing reply
+ * (handler.js's logNewFactsAsync awaits it in the background, same as the
+ * auto-log write itself).
  * @param {Array} messages - [{role, content}]
  * @param {string} [model] - overrides config.defaultModel (e.g. a session's /model choice)
  * @param {object} [opts]
  * @param {object} [opts.configOverride] - test a draft (uncommitted) config instead of the live one
- * @param {boolean} [opts.debug] - include reasoning/model/notesRead in the return value
- * @returns {Promise<{reply: string, newFacts: string[], modelError?: boolean, reasoning?: string|null, model?: string, notesRead?: string[]|null}>}
+ * @param {boolean} [opts.debug] - include reasoning/model/notesRead, and resolve newFacts, in the return value
+ * @returns {Promise<{reply: string, newFacts: string[]|Promise<string[]>, modelError?: boolean, reasoning?: string|null, model?: string, notesRead?: string[]|null}>}
  */
 async function chatWithPomisuke(messages, model, opts = {}) {
   const { configOverride, debug } = opts;
@@ -272,10 +314,20 @@ async function chatWithPomisuke(messages, model, opts = {}) {
     withoutThink = stripLeakedReasoningHeader(withoutThink);
   }
 
-  const { reply, newFacts } = extractNewFacts(withoutThink);
-  const result = { reply: reply || 'ぽみ…うまく話せなかったぷよ…', newFacts };
-  if (debug) Object.assign(result, { reasoning: reasoning || null, model: chosenModel, notesRead });
-  return result;
+  const { reply: strippedReply } = extractNewFacts(withoutThink); // strips any stray legacy markers, defensively
+  const reply = strippedReply || 'ぽみ…うまく話せなかったぷよ…';
+
+  let newFacts = Promise.resolve([]);
+  if (config.promptMode === 'vault') {
+    const userMessage = messages[messages.length - 1]?.content ?? '';
+    const reviewerModel = config.factReviewerModel || 'groq/compound';
+    newFacts = reviewReplyForFacts(userMessage, reply, reviewerModel);
+  }
+
+  if (debug) {
+    return { reply, newFacts: await newFacts, reasoning: reasoning || null, model: chosenModel, notesRead };
+  }
+  return { reply, newFacts };
 }
 
 module.exports = { chatWithPomisuke, listModels, getDefaultModel, LOCAL_MODEL_ID };

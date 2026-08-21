@@ -7,7 +7,7 @@ const { buildNotification } = require('./notify');
 const knowledge = require('./knowledge');
 const config = require('./config');
 const store = require('./store');
-const { chatWithPomisuke, listModels } = require('./groq');
+const { chatWithPomisuke, listModels, LOCAL_MODEL_ID } = require('./groq');
 
 const ADMIN_TEST_SESSION_ID = '__admin_test__';
 
@@ -93,7 +93,10 @@ app.use('/api/admin', express.json(), requireAdminSecret);
 app.get('/api/admin/config', async (req, res) => {
   try {
     const [cfg, availableModels] = await Promise.all([config.getLiveConfig(), listModels()]);
-    res.json({ config: cfg, availableModels });
+    // Reviewer conversations are Groq-only (see groq.js's reviewReplyForFacts) —
+    // the local model isn't offered as a reviewer choice.
+    const reviewerModels = availableModels.filter(id => id !== LOCAL_MODEL_ID);
+    res.json({ config: cfg, availableModels, reviewerModels });
   } catch (err) {
     console.error('admin config fetch error:', err);
     res.status(502).json({ error: 'config unreachable' });
