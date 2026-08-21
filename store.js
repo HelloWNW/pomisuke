@@ -9,7 +9,8 @@
  *   sessions[sessionId] = {
  *     active: true/false,
  *     messages: [{ role, content }],   // 直近 MAX_HISTORY 件のみ保持（スライディングウィンドウ）
- *     pomisukeMsgIds: Set<string>       // ぽみすけが送ったLINEメッセージID（返信チェーン判定用）
+ *     pomisukeMsgIds: Set<string>,      // ぽみすけが送ったLINEメッセージID（返信チェーン判定用）
+ *     model: string|null                // /model で選択されたモデル（未選択なら既定値を使用）
  *   }
  */
 
@@ -30,19 +31,30 @@ class ConversationStore {
       this.sessions[sessionId] = {
         active: false,
         messages: [],
-        pomisukeMsgIds: new Set()
+        pomisukeMsgIds: new Set(),
+        model: null
       };
     }
     return this.sessions[sessionId];
   }
 
   startSession(sessionId) {
+    const model = this.sessions[sessionId]?.model ?? null; // /model choice survives a session reset
     this.sessions[sessionId] = {
       active: true,
       messages: [],
-      pomisukeMsgIds: new Set()
+      pomisukeMsgIds: new Set(),
+      model
     };
     return this.sessions[sessionId];
+  }
+
+  getModel(sessionId) {
+    return this.sessions[sessionId]?.model ?? null;
+  }
+
+  setModel(sessionId, model) {
+    this._init(sessionId).model = model;
   }
 
   isActive(sessionId) {

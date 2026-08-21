@@ -17,7 +17,28 @@ const FACT_INSTRUCTIONS = `
 <<NEW_FACT: 短い日本語1文>> の形式で1行追加すること。新しい設定がなければ何も追加しない。
 このマーカーは自動的に取り除かれ、ユーザーには表示されない。`;
 
-const MODEL = 'openai/gpt-oss-120b';
+const DEFAULT_MODEL = 'openai/gpt-oss-120b';
+
+// Audio/moderation models aren't valid chat-completion models — excluded from
+// the selectable list so /model can't be pointed at something that'll break chat.
+const NON_CHAT_MODEL_RE = /whisper|tts|guard|moderation/i;
+const MODEL_LIST_CACHE_TTL_MS = 60 * 60 * 1000;
+
+let modelListCache = null; // {models: string[], expiresAt: number}
+
+/** @returns {Promise<string[]>} sorted chat-capable model IDs, cached 1h. */
+async function listModels() {
+  if (modelListCache && modelListCache.expiresAt > Date.now()) {
+    return modelListCache.models;
+  }
+  const res = await groq.models.list();
+  const models = res.data
+    .map(m => m.id)
+    .filter(id => !NON_CHAT_MODEL_RE.test(id))
+    .sort();
+  modelListCache = { models, expiresAt: Date.now() + MODEL_LIST_CACHE_TTL_MS };
+  return models;
+}
 
 async function getSystemPrompt() {
   let core;
@@ -44,12 +65,13 @@ function extractNewFacts(rawText) {
 /**
  * Send messages to Groq and return ぽみすけ's reply plus any new facts it improvised.
  * @param {Array} messages - [{role, content}]
+ * @param {string} [model] - overrides DEFAULT_MODEL (e.g. a session's /model choice)
  * @returns {Promise<{reply: string, newFacts: string[]}>}
  */
-async function chatWithPomisuke(messages) {
+async function chatWithPomisuke(messages, model) {
   const systemPrompt = await getSystemPrompt();
   const res = await groq.chat.completions.create({
-    model: MODEL,
+    model: model || DEFAULT_MODEL,
     messages: [
       { role: 'system', content: systemPrompt },
       ...messages
@@ -63,4 +85,4 @@ async function chatWithPomisuke(messages) {
   return extractNewFacts(raw);
 }
 
-module.exports = { chatWithPomisuke };
+module.exports = { chatWithPomisuke, listModels, DEFAULT_MODEL };
