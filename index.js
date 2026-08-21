@@ -1,4 +1,5 @@
 require('dotenv').config();
+const logStream = require('./logStream'); // patches console.* — require before anything else logs
 const path = require('path');
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -144,6 +145,25 @@ app.post('/api/admin/test-chat', async (req, res) => {
 app.post('/api/admin/test-chat/clear', (req, res) => {
   store.startSession(ADMIN_TEST_SESSION_ID);
   res.json({ ok: true });
+});
+
+// Live server log stream — every console.log/warn/error in the process
+// (real LINE traffic included, not just the dashboard's own test messages),
+// so you can watch for model/API errors as they happen. Plain streamed
+// text over fetch, not EventSource — EventSource can't send the
+// X-Admin-Secret header this route needs, same as every other /api/admin/*.
+app.get('/api/admin/logs/stream', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive'
+  });
+  for (const line of logStream.getRecentLines()) {
+    res.write(line + '\n');
+  }
+  const write = chunk => res.write(chunk);
+  logStream.subscribe(write);
+  req.on('close', () => logStream.unsubscribe(write));
 });
 
 // Vault note editor — read/write individual notes directly (each Save commits

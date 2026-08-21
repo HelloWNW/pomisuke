@@ -43,6 +43,15 @@
   .vault-list div:hover { background: #2a2a30; }
   .vault-list div.active { background: var(--accent); color: #111; }
   .error-text { color: var(--danger); font-size: 0.85rem; }
+  #logWindow {
+    height: 320px; overflow-y: auto; background: #111114; border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px; margin-bottom: 8px; font-family: ui-monospace, monospace;
+    font-size: 0.78rem; white-space: pre-wrap; word-break: break-all;
+  }
+  #logWindow .line { padding: 1px 0; }
+  #logWindow .line.error { color: var(--danger); }
+  #logWindow .line.warn { color: #f7d27a; }
+  #logWindow .line.log { color: var(--text); }
 </style>
 </head>
 <body>
@@ -133,6 +142,12 @@
         <h2>Diagnostics</h2>
         <div id="diagnostics">No test message sent yet.</div>
       </section>
+
+      <section>
+        <h2>Server Log <span id="logStatus" style="color:var(--muted);font-weight:normal;text-transform:none;font-size:0.8rem"></span></h2>
+        <div id="logWindow"></div>
+        <button class="secondary" onclick="clearLogWindow()">Clear view</button>
+      </section>
     </div>
   </div>
 </div>
@@ -168,6 +183,7 @@ async function unlock() {
   populateModelSelects();
   loadDraftOrLive();
   loadVaultList();
+  connectLogStream();
 }
 
 function populateModelSelects() {
@@ -429,6 +445,62 @@ document.addEventListener('change', e => {
     clearTestChat();
   }
 });
+
+// ── Live server log stream ──────────────────────────────────────────────
+// EventSource can't send the X-Admin-Secret header, so this reads a plain
+// streamed response body via fetch instead (same technique groq.js uses
+// server-side for the local LLM's SSE reading).
+const MAX_LOG_LINES = 500;
+let logLineCount = 0;
+let logStreamGeneration = 0; // bumped on each (re)connect to stop stale readers
+
+function clearLogWindow() {
+  document.getElementById('logWindow').innerHTML = '';
+  logLineCount = 0;
+}
+
+function appendLogLine(line) {
+  const el = document.getElementById('logWindow');
+  const level = /^\[error\]/.test(line) ? 'error' : /^\[warn\]/.test(line) ? 'warn' : 'log';
+  const div = document.createElement('div');
+  div.className = 'line ' + level;
+  div.textContent = line;
+  el.appendChild(div);
+  logLineCount++;
+  while (logLineCount > MAX_LOG_LINES) {
+    el.firstChild?.remove();
+    logLineCount--;
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+async function connectLogStream() {
+  const myGeneration = ++logStreamGeneration;
+  const statusEl = document.getElementById('logStatus');
+  try {
+    statusEl.textContent = '(connecting...)';
+    const res = await fetch('/api/admin/logs/stream', { headers: { 'X-Admin-Secret': secret } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    statusEl.textContent = '(live)';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      if (myGeneration !== logStreamGeneration) return; // superseded by a newer connection
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) if (line) appendLogLine(line);
+    }
+    throw new Error('stream ended');
+  } catch (err) {
+    if (myGeneration !== logStreamGeneration) return;
+    statusEl.textContent = '(disconnected — retrying...)';
+    setTimeout(() => { if (myGeneration === logStreamGeneration) connectLogStream(); }, 3000);
+  }
+}
 </script>
 </body>
 </html>
