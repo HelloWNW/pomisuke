@@ -17,7 +17,7 @@ const FACT_INSTRUCTIONS = `
 <<NEW_FACT: 短い日本語1文>> の形式で1行追加すること。新しい設定がなければ何も追加しない。
 このマーカーは自動的に取り除かれ、ユーザーには表示されない。`;
 
-const MODEL = 'groq/compound';
+const MODEL = 'openai/gpt-oss-120b';
 
 async function getSystemPrompt() {
   let core;
