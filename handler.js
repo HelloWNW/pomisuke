@@ -1,5 +1,5 @@
 const store = require('./store');
-const { chatWithPomisuke, listModels, DEFAULT_MODEL, LOCAL_MODEL_ID } = require('./groq');
+const { chatWithPomisuke, listModels, getDefaultModel, LOCAL_MODEL_ID } = require('./groq');
 const knowledge = require('./knowledge');
 
 // ── ぽよマスター 表記ゆれ正規表現 ────────────────────────────────────────
@@ -294,9 +294,10 @@ async function handleEvent(event, client) {
     }
 
     log('INFO', userId, sessionId, '/model: list requested');
+    const currentModel = store.getModel(sessionId) || await getDefaultModel();
     await client.replyMessage({
       replyToken: event.replyToken,
-      messages: [buildModelListMessage(models, store.getModel(sessionId) || DEFAULT_MODEL, sourceType)]
+      messages: [buildModelListMessage(models, currentModel, sourceType)]
     });
     return;
   }

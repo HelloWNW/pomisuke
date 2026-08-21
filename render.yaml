@@ -27,6 +27,8 @@ services:
         sync: false
       - key: GAS_NOTIFY_SECRET
         sync: false
+      - key: ADMIN_SECRET
+        sync: false
       - key: USER_ID_A
         sync: false
       - key: USER_ID_S

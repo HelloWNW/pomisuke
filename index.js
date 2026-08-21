@@ -5,6 +5,11 @@ const line = require('@line/bot-sdk');
 const { handleEvent } = require('./handler');
 const { buildNotification } = require('./notify');
 const knowledge = require('./knowledge');
+const config = require('./config');
+const store = require('./store');
+const { chatWithPomisuke, listModels } = require('./groq');
+
+const ADMIN_TEST_SESSION_ID = '__admin_test__';
 
 // ── LINE SDK config ───────────────────────────────────────────────────────
 const lineConfig = {
@@ -68,6 +73,113 @@ app.get('/api/vault/notes/:folder/:file', async (req, res) => {
   const result = await knowledge.readFile(`vault/${folder}/${file}`).catch(() => null);
   if (!result) return res.status(404).json({ error: 'not found' });
   res.json({ path: `${folder}/${file}`, content: result.content });
+});
+
+// ── Admin tuning dashboard (protected — unlike /vault, this can rewrite the
+// bot's live persona/params for everyone and a Commit triggers a redeploy) ──
+function requireAdminSecret(req, res, next) {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret) return res.status(503).json({ error: 'admin panel not configured' });
+  if (req.get('X-Admin-Secret') !== secret) return res.status(401).json({ error: 'unauthorized' });
+  next();
+}
+
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+app.use('/api/admin', express.json(), requireAdminSecret);
+
+app.get('/api/admin/config', async (req, res) => {
+  try {
+    const [cfg, availableModels] = await Promise.all([config.getLiveConfig(), listModels()]);
+    res.json({ config: cfg, availableModels });
+  } catch (err) {
+    console.error('admin config fetch error:', err);
+    res.status(502).json({ error: 'config unreachable' });
+  }
+});
+
+app.post('/api/admin/config', async (req, res) => {
+  const c = req.body?.config;
+  if (!c || typeof c.systemPrompt !== 'string' || !c.defaultModel ||
+      typeof c.generalParams !== 'object' || typeof c.modelOverrides !== 'object') {
+    return res.status(400).json({ error: 'invalid config shape' });
+  }
+  try {
+    await config.writeConfig(c, 'admin: update bot config');
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin config commit error:', err);
+    res.status(502).json({ error: 'commit failed' });
+  }
+});
+
+// Test-chat playground — reuses store.js's normal session methods (same
+// MAX_HISTORY=10 sliding window LINE sessions use) against one fixed
+// pseudo-session id, and can test a draft (uncommitted) config via configOverride.
+app.post('/api/admin/test-chat', async (req, res) => {
+  const { message, draftConfig } = req.body ?? {};
+  if (typeof message !== 'string' || !message.trim()) {
+    return res.status(400).json({ error: 'message required' });
+  }
+  try {
+    store.addUserMessage(ADMIN_TEST_SESSION_ID, message);
+    const result = await chatWithPomisuke(
+      store.getMessagesForAPI(ADMIN_TEST_SESSION_ID),
+      draftConfig?.defaultModel,
+      { configOverride: draftConfig, debug: true }
+    );
+    store.addAssistantMessage(ADMIN_TEST_SESSION_ID, result.reply);
+    res.json(result);
+  } catch (err) {
+    console.error('admin test-chat error:', err);
+    res.status(502).json({ error: 'test chat failed' });
+  }
+});
+
+app.post('/api/admin/test-chat/clear', (req, res) => {
+  store.startSession(ADMIN_TEST_SESSION_ID);
+  res.json({ ok: true });
+});
+
+// Vault note editor — read/write individual notes directly (each Save commits
+// immediately, separate from the config draft/commit flow above). The public
+// /api/vault/notes/:folder/:file route above stays read-only and untouched.
+app.get('/api/admin/vault/notes', async (req, res) => {
+  try {
+    const graph = await knowledge.buildGraph();
+    res.json({ notes: graph.nodes.filter(n => !n.missing) });
+  } catch (err) {
+    console.error('admin vault list error:', err);
+    res.status(502).json({ error: 'vault unreachable' });
+  }
+});
+
+app.get('/api/admin/vault/notes/:folder/:file', async (req, res) => {
+  const { folder, file } = req.params;
+  if (!['world-setting', 'auto-log'].includes(folder) || !/^[\w-]+\.md$/.test(file)) {
+    return res.status(400).json({ error: 'invalid path' });
+  }
+  const result = await knowledge.readFile(`vault/${folder}/${file}`).catch(() => null);
+  if (!result) return res.status(404).json({ error: 'not found' });
+  res.json({ path: `${folder}/${file}`, content: result.content });
+});
+
+app.put('/api/admin/vault/notes/:folder/:file', async (req, res) => {
+  const { folder, file } = req.params;
+  if (!['world-setting', 'auto-log'].includes(folder) || !/^[\w-]+\.md$/.test(file)) {
+    return res.status(400).json({ error: 'invalid path' });
+  }
+  const { content } = req.body ?? {};
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content required' });
+  try {
+    await knowledge.writeFile(`vault/${folder}/${file}`, content, `admin: edit ${folder}/${file}`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin vault save error:', err);
+    res.status(502).json({ error: 'save failed' });
+  }
 });
 
 // ── GAS notification endpoint ─────────────────────────────────────────────

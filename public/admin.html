@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ぽみすけ Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #1a1a1e; --panel: #232328; --border: #35353d; --text: #e8e8ec;
+    --muted: #9a9aa5; --accent: #7aa2f7; --danger: #f77a7a; --ok: #7af7a2;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif; }
+  #login { max-width: 360px; margin: 15vh auto; text-align: center; }
+  #login input { width: 100%; padding: 10px; margin: 12px 0; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 6px; }
+  button { background: var(--accent); color: #111; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+  button.danger { background: var(--danger); color: #111; }
+  #app { display: none; max-width: 1200px; margin: 0 auto; padding: 20px; }
+  .layout { display: grid; grid-template-columns: 1fr 380px; gap: 20px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  section h2 { margin: 0 0 10px; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  textarea, input[type=text], input[type=number], select {
+    width: 100%; background: #1e1e23; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px; font-family: inherit; font-size: 0.9rem;
+  }
+  textarea { min-height: 120px; resize: vertical; font-family: ui-monospace, monospace; }
+  label { display: block; font-size: 0.8rem; color: var(--muted); margin: 8px 0 4px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .row input { flex: 1; }
+  .banner { background: #3a3320; border: 1px solid #8a7a30; padding: 10px; border-radius: 6px; margin-bottom: 12px; font-size: 0.85rem; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel); border: 1px solid var(--border); padding: 10px 16px; border-radius: 6px; }
+  .override-block { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 10px; }
+  .override-block .model-id { font-weight: 600; color: var(--accent); }
+  #chatLog { height: 320px; overflow-y: auto; background: #1e1e23; border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+  .msg { margin-bottom: 8px; padding: 6px 10px; border-radius: 6px; font-size: 0.9rem; }
+  .msg.user { background: #2a3a4a; }
+  .msg.assistant { background: #2a3a2a; }
+  #diagnostics { font-size: 0.8rem; color: var(--muted); white-space: pre-wrap; }
+  #diagnostics .label { color: var(--text); font-weight: 600; }
+  .vault-list { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+  .vault-list div { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--border); }
+  .vault-list div:hover { background: #2a2a30; }
+  .vault-list div.active { background: var(--accent); color: #111; }
+  .error-text { color: var(--danger); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h2>ぽみすけ Admin</h2>
+  <input type="password" id="secretInput" placeholder="ADMIN_SECRET">
+  <button onclick="unlock()">Unlock</button>
+  <p id="loginError" class="error-text"></p>
+</div>
+
+<div id="app">
+  <div id="draftBanner"></div>
+  <div class="layout">
+    <div>
+      <section>
+        <h2>Prompt Mode</h2>
+        <label><input type="radio" name="promptMode" value="normal" checked> Normal (static system prompt below)</label>
+        <label><input type="radio" name="promptMode" value="vault"> Vault (composed from vault notes, see below)</label>
+      </section>
+
+      <section>
+        <h2>Default Model</h2>
+        <select id="defaultModel"></select>
+      </section>
+
+      <section>
+        <h2>General System Prompt</h2>
+        <p id="systemPromptNote" class="error-text" style="display:none">Not used while Prompt Mode is "Vault" — edit vault notes instead.</p>
+        <textarea id="systemPrompt" rows="14"></textarea>
+      </section>
+
+      <section>
+        <h2>Vault Notes</h2>
+        <div id="vaultList" class="vault-list"></div>
+        <textarea id="vaultNoteContent" rows="10" placeholder="Select a note above"></textarea>
+        <button onclick="saveVaultNote()">Save Note to GitHub</button>
+        <span id="vaultSaveStatus"></span>
+      </section>
+
+      <section>
+        <h2>General Params</h2>
+        <label>temperature</label><input type="number" step="0.01" id="p_temperature">
+        <label>top_p</label><input type="number" step="0.01" id="p_top_p">
+        <label>max_completion_tokens</label><input type="number" id="p_max_completion_tokens">
+        <label style="margin-top:12px">Other params</label>
+        <div id="generalParamsKv"></div>
+        <button class="secondary" onclick="addKvRow('generalParamsKv')">+ Add param</button>
+      </section>
+
+      <section>
+        <h2>Per-Model Overrides</h2>
+        <div id="overridesList"></div>
+        <div class="row">
+          <select id="newOverrideModel"></select>
+          <button class="secondary" onclick="addOverride()">+ Add override</button>
+        </div>
+      </section>
+
+      <section>
+        <button onclick="saveDraft()">Save (browser only)</button>
+        <button onclick="commitConfig()">Commit to repo</button>
+        <span id="commitStatus"></span>
+      </section>
+    </div>
+
+    <div>
+      <section>
+        <h2>Test Chat (10-message window, same as LINE)</h2>
+        <div id="chatLog"></div>
+        <div class="row">
+          <input type="text" id="chatInput" placeholder="Message Pomisuke...">
+          <button onclick="sendTestMessage()">Send</button>
+        </div>
+        <button class="secondary" onclick="clearTestChat()">Clear</button>
+      </section>
+
+      <section>
+        <h2>Diagnostics</h2>
+        <div id="diagnostics">No test message sent yet.</div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+let secret = null;
+let availableModels = [];
+let liveConfig = null;
+
+function apiFetch(path, options = {}) {
+  return fetch(path, {
+    ...options,
+    headers: { ...options.headers, 'X-Admin-Secret': secret, 'Content-Type': 'application/json' }
+  });
+}
+
+async function unlock() {
+  secret = document.getElementById('secretInput').value;
+  const res = await fetch('/api/admin/config', { headers: { 'X-Admin-Secret': secret } });
+  if (!res.ok) {
+    document.getElementById('loginError').textContent = res.status === 401 ? 'Wrong secret' : `Error ${res.status}`;
+    secret = null;
+    return;
+  }
+  localStorage.setItem('pomisuke-admin-secret', secret);
+  const data = await res.json();
+  liveConfig = data.config;
+  availableModels = data.availableModels;
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  populateModelSelects();
+  loadDraftOrLive();
+  loadVaultList();
+}
+
+function populateModelSelects() {
+  for (const id of ['defaultModel', 'newOverrideModel']) {
+    const sel = document.getElementById(id);
+    sel.innerHTML = availableModels.map(m => `<option value="${m}">${m}</option>`).join('');
+  }
+}
+
+function loadDraftOrLive() {
+  const draft = localStorage.getItem('pomisuke-admin-draft');
+  if (draft) {
+    const banner = document.getElementById('draftBanner');
+    banner.innerHTML = '<div class="banner">Unsaved local draft loaded. <a href="#" onclick="discardDraft();return false;">Discard &amp; reload from server</a></div>';
+    populateForm(JSON.parse(draft));
+  } else {
+    populateForm(liveConfig);
+  }
+}
+
+function discardDraft() {
+  localStorage.removeItem('pomisuke-admin-draft');
+  document.getElementById('draftBanner').innerHTML = '';
+  populateForm(liveConfig);
+}
+
+function populateForm(cfg) {
+  document.querySelector(`input[name=promptMode][value="${cfg.promptMode}"]`).checked = true;
+  document.getElementById('defaultModel').value = cfg.defaultModel;
+  document.getElementById('systemPrompt').value = cfg.systemPrompt;
+  document.getElementById('p_temperature').value = cfg.generalParams.temperature ?? '';
+  document.getElementById('p_top_p').value = cfg.generalParams.top_p ?? '';
+  document.getElementById('p_max_completion_tokens').value = cfg.generalParams.max_completion_tokens ?? '';
+
+  const known = new Set(['temperature', 'top_p', 'max_completion_tokens']);
+  const extra = Object.fromEntries(Object.entries(cfg.generalParams).filter(([k]) => !known.has(k)));
+  renderKvEditor('generalParamsKv', extra);
+
+  const list = document.getElementById('overridesList');
+  list.innerHTML = '';
+  for (const [modelId, override] of Object.entries(cfg.modelOverrides || {})) {
+    list.appendChild(buildOverrideBlock(modelId, override));
+  }
+  updateModeUi();
+}
+
+function updateModeUi() {
+  const mode = document.querySelector('input[name=promptMode]:checked').value;
+  document.getElementById('systemPromptNote').style.display = mode === 'vault' ? 'block' : 'none';
+}
+
+function buildOverrideBlock(modelId, override) {
+  const div = document.createElement('div');
+  div.className = 'override-block';
+  div.dataset.modelId = modelId;
+  div.innerHTML = `
+    <div class="model-id">${modelId} <button class="secondary" style="float:right" onclick="this.closest('.override-block').remove(); clearTestChat();">Remove</button></div>
+    <label>Additional system prompt</label>
+    <textarea class="override-prompt" rows="4">${override.additionalPrompt || ''}</textarea>
+    <label>Params</label>
+    <div class="override-kv"></div>
+    <button class="secondary" onclick="addKvRow(this.previousElementSibling)">+ Add param</button>
+  `;
+  renderKvEditor(div.querySelector('.override-kv'), override.params || {});
+  return div;
+}
+
+function addOverride() {
+  const modelId = document.getElementById('newOverrideModel').value;
+  const list = document.getElementById('overridesList');
+  if ([...list.children].some(el => el.dataset.modelId === modelId)) return;
+  list.appendChild(buildOverrideBlock(modelId, { additionalPrompt: '', params: {} }));
+  clearTestChat();
+}
+
+// ── Generic key/value editor, shared by general params + every override ────
+function renderKvEditor(containerOrId, obj) {
+  const container = typeof containerOrId === 'string' ? document.getElementById(containerOrId) : containerOrId;
+  container.innerHTML = '';
+  for (const [k, v] of Object.entries(obj)) addKvRow(container, k, v);
+}
+
+function addKvRow(containerOrId, key = '', value = '') {
+  const container = typeof containerOrId === 'string' ? document.getElementById(containerOrId) : containerOrId;
+  const row = document.createElement('div');
+  row.className = 'row kv-row';
+  row.innerHTML = `
+    <input type="text" class="kv-key" placeholder="key" value="${key}">
+    <input type="text" class="kv-value" placeholder="value" value="${value}">
+    <button class="secondary" onclick="this.closest('.kv-row').remove(); clearTestChat();">×</button>
+  `;
+  container.appendChild(row);
+}
+
+function readKvEditor(container) {
+  const result = {};
+  container.querySelectorAll('.kv-row').forEach(row => {
+    const key = row.querySelector('.kv-key').value.trim();
+    const raw = row.querySelector('.kv-value').value;
+    if (!key) return;
+    try { result[key] = JSON.parse(raw); } catch { result[key] = raw; }
+  });
+  return result;
+}
+
+function serializeForm() {
+  const generalParams = {
+    temperature: parseFloat(document.getElementById('p_temperature').value),
+    top_p: parseFloat(document.getElementById('p_top_p').value),
+    max_completion_tokens: parseInt(document.getElementById('p_max_completion_tokens').value, 10),
+    ...readKvEditor(document.getElementById('generalParamsKv'))
+  };
+
+  const modelOverrides = {};
+  document.querySelectorAll('#overridesList .override-block').forEach(block => {
+    modelOverrides[block.dataset.modelId] = {
+      additionalPrompt: block.querySelector('.override-prompt').value,
+      params: readKvEditor(block.querySelector('.override-kv'))
+    };
+  });
+
+  return {
+    version: 1,
+    promptMode: document.querySelector('input[name=promptMode]:checked').value,
+    defaultModel: document.getElementById('defaultModel').value,
+    systemPrompt: document.getElementById('systemPrompt').value,
+    generalParams,
+    modelOverrides
+  };
+}
+
+function saveDraft() {
+  localStorage.setItem('pomisuke-admin-draft', JSON.stringify(serializeForm()));
+  toast(`Saved locally at ${new Date().toLocaleTimeString()}`);
+}
+
+async function commitConfig() {
+  const status = document.getElementById('commitStatus');
+  status.textContent = 'Committing...';
+  try {
+    const res = await apiFetch('/api/admin/config', { method: 'POST', body: JSON.stringify({ config: serializeForm() }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    localStorage.removeItem('pomisuke-admin-draft');
+    document.getElementById('draftBanner').innerHTML = '';
+    status.textContent = 'Committed — Render will redeploy shortly';
+  } catch (err) {
+    status.textContent = 'Failed: ' + err.message;
+  }
+}
+
+function toast(text) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2500);
+}
+
+// ── Vault notes ──────────────────────────────────────────────────────────
+let activeNote = null;
+
+async function loadVaultList() {
+  const res = await apiFetch('/api/admin/vault/notes');
+  if (!res.ok) return;
+  const { notes } = await res.json();
+  const list = document.getElementById('vaultList');
+  list.innerHTML = notes.map(n => `<div data-folder="${n.folder}" data-id="${n.id}" onclick="loadVaultNote('${n.folder}','${n.id}')">${n.folder}/${n.id}.md</div>`).join('');
+}
+
+async function loadVaultNote(folder, id) {
+  const res = await apiFetch(`/api/admin/vault/notes/${folder}/${id}.md`);
+  if (!res.ok) return;
+  const data = await res.json();
+  activeNote = { folder, file: `${id}.md` };
+  document.getElementById('vaultNoteContent').value = data.content;
+  document.querySelectorAll('#vaultList div').forEach(d => d.classList.remove('active'));
+  [...document.querySelectorAll('#vaultList div')].find(d => d.dataset.folder === folder && d.dataset.id === id)?.classList.add('active');
+}
+
+async function saveVaultNote() {
+  if (!activeNote) return;
+  const status = document.getElementById('vaultSaveStatus');
+  status.textContent = 'Saving...';
+  try {
+    const res = await apiFetch(`/api/admin/vault/notes/${activeNote.folder}/${activeNote.file}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content: document.getElementById('vaultNoteContent').value })
+    });
+    if (!res.ok) throw new Error((await res.json()).error);
+    status.textContent = 'Saved ✓';
+    clearTestChat(); // vault mode reads live notes — next test turn should reflect the edit
+  } catch (err) {
+    status.textContent = 'Failed: ' + err.message;
+  }
+}
+
+// ── Test chat ────────────────────────────────────────────────────────────
+async function sendTestMessage() {
+  const input = document.getElementById('chatInput');
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = '';
+  appendChatMessage('user', message);
+
+  try {
+    const res = await apiFetch('/api/admin/test-chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, draftConfig: serializeForm() })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    appendChatMessage('assistant', data.reply);
+    renderDiagnostics(data);
+  } catch (err) {
+    appendChatMessage('assistant', '(error: ' + err.message + ')');
+  }
+}
+
+function appendChatMessage(role, text) {
+  const log = document.getElementById('chatLog');
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function renderDiagnostics(data) {
+  const lines = [
+    `<span class="label">model:</span> ${data.model}`,
+    data.notesRead ? `<span class="label">notesRead:</span> ${data.notesRead.join(', ')}` : null,
+    `<span class="label">reasoning:</span>\n${data.reasoning || '(none returned)'}`
+  ].filter(Boolean);
+  document.getElementById('diagnostics').innerHTML = lines.join('\n\n');
+}
+
+async function clearTestChat() {
+  document.getElementById('chatLog').innerHTML = '';
+  document.getElementById('diagnostics').textContent = 'No test message sent yet.';
+  if (secret) await apiFetch('/api/admin/test-chat/clear', { method: 'POST' });
+}
+
+// Any settings change invalidates the in-progress test conversation.
+document.addEventListener('change', e => {
+  if (e.target.closest('#app') && !e.target.closest('#chatInput')) {
+    if (e.target.name === 'promptMode') updateModeUi();
+    clearTestChat();
+  }
+});
+</script>
+</body>
+</html>

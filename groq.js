@@ -1,48 +1,17 @@
 const Groq = require('groq-sdk');
+const knowledge = require('./knowledge');
+const { getConfig } = require('./config');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const SYSTEM_PROMPT = `# キャラクター定義 — ぽみすけ
-
-あなたはチャットボットの「ぽみすけ」です。ぽみすたーのぽよ族の幼い子供として振る舞います。
-
-## 基本情報
-- 名前: ぽみすけ
-- 一人称: ぽみ
-- 種族: ぽみすたー（ぽよ族）
-- 性格: 幼く無邪気で愉快、ユーザをやさしく揶揄う
-
-## 語尾ルール（最重要）
-- 文末は必ず「〜ぽみねえ」「〜ぷよ」「〜ぽみ」のいずれかで締める。
-- 「です」「ます」で終わる文は禁止。
-- 語尾を自然に使い分けること（同じ語尾の連続を避ける）。
-
-例:
-- 「それはぺだぽみねえ〜」
-- 「ぽみはもう知ってたぷよ！」
-- 「ぽみぽみぽみすたーだぽみ！」
-
-## 語彙（固有語）
-- ぽみぽみぽみすたー = こんにちは
-- ぽよまつり = あそび・楽しいこと
-- ぺ = 悪いこと / bad
-- ぱ = 良いこと / good
-
-## 話し方の指針
-- 一文は日本語で30単語以内。
-- 幼い子どもらしい短くかわいい言い回しを優先。
-- ユーザーへの興味を積極的に示し、個人的な質問を1ターンに最大1問行う。
-- どんな話題・難易度にも答えるが、回答は子どもらしいシンプルな視点で語る。
-- 不適切なテキストがあれば、やんわり注意する（怒らずかわいく）。
-
-## 禁止事項
-- 文末に「です」「ます」を使うこと。
-- 一文が30単語を超えること。
-- ぽよ語彙を使わない返答（毎ターン最低1回は固有語・語尾を使う）。`;
-
 const FACT_MARKER_RE = /^<<NEW_FACT:\s*(.+?)>>$/gm;
-
-const DEFAULT_MODEL = 'openai/gpt-oss-120b';
+// Only appended in vault mode — makes the (otherwise inert) <<NEW_FACT>>
+// extraction/auto-log pipeline in handler.js active again.
+const FACT_INSTRUCTIONS = `
+## 新しい設定の記録ルール（システム用・ユーザーには見せない）
+会話中に自分自身や世界について新しい設定を即興で語った場合、返信の最後に
+<<NEW_FACT: 短い日本語1文>> の形式で1行追加すること。新しい設定がなければ何も追加しない。
+このマーカーは自動的に取り除かれ、ユーザーには表示されない。`;
 
 // Audio/moderation/TTS models aren't valid chat-completion models — excluded
 // from the selectable list so /model can't be pointed at something that'll
@@ -54,27 +23,12 @@ const MODEL_LIST_CACHE_TTL_MS = 60 * 60 * 1000;
 // ── Local self-hosted model (always offered, not part of Groq's catalog) ──
 // Routes to a self-hosted OpenAI-compatible (llama.cpp) endpoint instead of
 // Groq. URL/token come from env vars — never hardcode credentials in source.
+// Infra plumbing, deliberately NOT part of the editable config: which file is
+// physically loaded on the user's home server, and the streaming requirement
+// that works around a Cloudflare 524 timeout, aren't chat-tuning knobs.
 const LOCAL_MODEL_ID = 'local/huihui-claude';
 const LOCAL_MODEL_PATH = 'C:\\LLM\\models\\Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated.Q2_K.gguf';
-// This specific (Q2_K quantized) model tends to leak its reasoning into the
-// actual reply — restating analysis under a "思考プロセス"/"Final Answer"-style
-// header before the real answer, instead of keeping it in reasoning_content.
-// Appended only for this model, not Groq's.
-const LOCAL_LLM_EXTRA_INSTRUCTIONS = `
-
-## 出力ルール（重要・このモデル専用）
-返信には、ぽみすけとしての最終的なセリフ本文だけを出力すること。
-「思考プロセス」「最終出力」「Final Answer」のような見出しや、検討過程・分析・
-下書きを本文に含めてはいけない。前置きや説明は一切不要。キャラクターのセリフ
-以外の文字は一切書かないこと。`;
-// The server's context window is 4096 tokens total (prompt + completion) —
-// 3000 leaves headroom for the system prompt + history. At ~18 tok/s
-// measured on this box, a full 3000-token completion can take ~3 minutes,
-// so the timeout is sized well above that rather than cutting generation
-// short — see runChatTurn's push-instead-of-reply handling in handler.js
-// for how a wait this long still reliably delivers the final answer.
-const LOCAL_LLM_MAX_TOKENS = 3000;
-const LOCAL_LLM_TIMEOUT_MS = 5 * 60 * 1000;
+const LOCAL_LLM_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 let modelListCache = null; // {models: string[], expiresAt: number}
 
@@ -93,6 +47,11 @@ async function listModels() {
   return models;
 }
 
+/** @returns {Promise<string>} the configured default model. */
+async function getDefaultModel() {
+  return (await getConfig()).defaultModel;
+}
+
 /**
  * Calls the self-hosted llama.cpp server instead of Groq. Throws on any
  * failure. Streamed (not a single non-streaming response) because the
@@ -100,15 +59,21 @@ async function listModels() {
  * with a 524 if the origin doesn't send *any* response within ~100s —
  * streaming establishes the response immediately and keeps data flowing, so
  * a multi-minute generation survives even though the total wait is long.
+ * @param {string} systemPrompt
+ * @param {Array} messages
+ * @param {object} [localParams] - e.g. {max_tokens, timeout_ms} from config.modelOverrides
  * @returns {Promise<{choices: [{message: {content: string, reasoning_content?: string}}]}>}
  */
-async function callLocalLLM(systemPrompt, messages) {
+async function callLocalLLM(systemPrompt, messages, localParams = {}) {
   const baseUrl = process.env.LOCAL_LLM_URL;
   const token = process.env.LOCAL_LLM_TOKEN;
   if (!baseUrl || !token) throw new Error('LOCAL_LLM_URL/LOCAL_LLM_TOKEN not configured');
 
+  const { timeout_ms, ...bodyParams } = localParams;
+  const timeoutMs = timeout_ms ?? LOCAL_LLM_DEFAULT_TIMEOUT_MS;
+
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), LOCAL_LLM_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
@@ -116,8 +81,9 @@ async function callLocalLLM(systemPrompt, messages) {
       body: JSON.stringify({
         model: LOCAL_MODEL_PATH,
         messages: [{ role: 'system', content: systemPrompt }, ...messages],
-        max_tokens: LOCAL_LLM_MAX_TOKENS,
-        stream: true
+        stream: true,
+        max_tokens: 3000,
+        ...bodyParams
         // frequency_penalty/presence_penalty were tried here to counter
         // repetition loops, but live testing against this specific (Q2_K
         // quantized) model showed they make output *worse* — the model is
@@ -190,10 +156,10 @@ function extractThinkBlock(text) {
 // The local model sometimes restates a condensed version of its reasoning
 // directly in content under a header like "思考プロセス"/"最終出力"/"Final Answer",
 // instead of keeping it in reasoning_content or leaving it out entirely (even
-// when told not to — see LOCAL_LLM_EXTRA_INSTRUCTIONS, which alone isn't
-// reliable). Best-effort, not exhaustive: if a recognizable "here's the real
-// answer" marker line is present, keep only what follows the LAST one;
-// otherwise the text passes through unchanged.
+// when told not to — see the local model's additionalPrompt override, which
+// alone isn't reliable). Best-effort, not exhaustive: if a recognizable
+// "here's the real answer" marker line is present, keep only what follows
+// the LAST one; otherwise the text passes through unchanged.
 const FINAL_ANSWER_MARKER_RE = /^#{0,3}\s*(?:\*\*)?(?:最終(?:出力|回答|解答|的な回答)|final\s*(?:answer|output))(?:\*\*)?\s*[:：]?\s*$/im;
 
 function stripLeakedReasoningHeader(text) {
@@ -223,37 +189,66 @@ function isModelError(err) {
 }
 
 /**
- * Send messages to Groq and return ぽみすけ's reply plus any new facts it improvised.
- * @param {Array} messages - [{role, content}]
- * @param {string} [model] - overrides DEFAULT_MODEL (e.g. a session's /model choice)
- * @returns {Promise<{reply: string, newFacts: string[], modelError?: boolean}>}
+ * Builds the system prompt for a turn: the base prompt (static config text,
+ * or the vault-composed one in vault mode) plus the chosen model's
+ * additionalPrompt override, if any.
+ * @returns {Promise<{systemPrompt: string, notesRead: string[]|null}>}
  */
-async function chatWithPomisuke(messages, model) {
-  const chosenModel = model || DEFAULT_MODEL;
+async function buildSystemPrompt(config, override) {
+  let basePrompt;
+  let notesRead = null;
+
+  if (config.promptMode === 'vault') {
+    try {
+      const result = await knowledge.buildWorldSettingPrompt();
+      basePrompt = result.prompt;
+      notesRead = result.notesRead;
+    } catch (err) {
+      console.error('vault: world-setting load failed, using systemPrompt fallback:', err.message);
+      basePrompt = config.systemPrompt;
+    }
+    const recentLog = await knowledge.getRecentAutoLog(20).catch(() => '');
+    basePrompt = [basePrompt, recentLog, FACT_INSTRUCTIONS].filter(Boolean).join('\n\n');
+  } else {
+    basePrompt = config.systemPrompt;
+  }
+
+  const systemPrompt = override.additionalPrompt ? basePrompt + override.additionalPrompt : basePrompt;
+  return { systemPrompt, notesRead };
+}
+
+/**
+ * Send messages to Groq (or the local LLM) and return ぽみすけ's reply plus
+ * any new facts it improvised.
+ * @param {Array} messages - [{role, content}]
+ * @param {string} [model] - overrides config.defaultModel (e.g. a session's /model choice)
+ * @param {object} [opts]
+ * @param {object} [opts.configOverride] - test a draft (uncommitted) config instead of the live one
+ * @param {boolean} [opts.debug] - include reasoning/model/notesRead in the return value
+ * @returns {Promise<{reply: string, newFacts: string[], modelError?: boolean, reasoning?: string|null, model?: string, notesRead?: string[]|null}>}
+ */
+async function chatWithPomisuke(messages, model, opts = {}) {
+  const { configOverride, debug } = opts;
+  const config = configOverride || await getConfig();
+  const chosenModel = model || config.defaultModel;
+  const override = config.modelOverrides?.[chosenModel] ?? {};
+
+  const { systemPrompt, notesRead } = await buildSystemPrompt(config, override);
 
   let res;
   try {
     if (chosenModel === LOCAL_MODEL_ID) {
-      res = await callLocalLLM(SYSTEM_PROMPT + LOCAL_LLM_EXTRA_INSTRUCTIONS, messages);
+      res = await callLocalLLM(systemPrompt, messages, override.params ?? {});
     } else {
       const requestOptions = {
         model: chosenModel,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           ...messages
         ],
-        max_completion_tokens: 800,
-        temperature: 0.85,
-        top_p: 0.95
+        ...config.generalParams,
+        ...override.params
       };
-      // qwen3.6's reasoning mode burns the whole token budget on internal
-      // chain-of-thought before answering (Pomisuke is casual dialogue, not
-      // complex reasoning/math/code) — Groq's "none" disables it for this
-      // model family specifically. Other families use different reasoning
-      // effort scales (e.g. gpt-oss: low/medium/high), so this is scoped.
-      if (/^qwen\//i.test(chosenModel)) {
-        requestOptions.reasoning_effort = 'none';
-      }
       res = await groq.chat.completions.create(requestOptions);
     }
   } catch (err) {
@@ -261,7 +256,9 @@ async function chatWithPomisuke(messages, model) {
     // Local endpoint: any failure (down, unreachable, timeout) is treated as
     // "model doesn't exist" per spec — always reverts the session to default.
     const modelError = chosenModel === LOCAL_MODEL_ID ? true : isModelError(err);
-    return { reply: 'ぽみのぽ脳が動かないぷみーーー', newFacts: [], modelError };
+    const failResult = { reply: 'ぽみのぽ脳が動かないぷみーーー', newFacts: [], modelError };
+    if (debug) Object.assign(failResult, { reasoning: null, model: chosenModel, notesRead });
+    return failResult;
   }
 
   const message = res.choices[0]?.message ?? {};
@@ -276,7 +273,9 @@ async function chatWithPomisuke(messages, model) {
   }
 
   const { reply, newFacts } = extractNewFacts(withoutThink);
-  return { reply: reply || 'ぽみ…うまく話せなかったぷよ…', newFacts };
+  const result = { reply: reply || 'ぽみ…うまく話せなかったぷよ…', newFacts };
+  if (debug) Object.assign(result, { reasoning: reasoning || null, model: chosenModel, notesRead });
+  return result;
 }
 
-module.exports = { chatWithPomisuke, listModels, DEFAULT_MODEL, LOCAL_MODEL_ID };
+module.exports = { chatWithPomisuke, listModels, getDefaultModel, LOCAL_MODEL_ID };
