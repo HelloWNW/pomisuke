@@ -187,6 +187,16 @@ function isModelError(err) {
 const NONE_RE = /^none$/i;
 const VOCAB_LINE_RE = /^VOCAB:\s*(.+)$/i;
 const FACT_LINE_RE = /^FACT:\s*(.+)$/i;
+// Lazy-load the reviewer conversation: the reply already goes out
+// unblocked, and this additionally delays even *starting* the reviewer
+// call so it never competes with the reply for resources right away.
+// Skipped in debug mode (dashboard test-chat), where immediate feedback
+// matters more than lazy-loading.
+const FACT_REVIEW_DELAY_MS = 5000;
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function renderReviewPrompt(template, vars) {
   return Object.entries(vars).reduce(
@@ -351,7 +361,8 @@ async function chatWithPomisuke(messages, model, opts = {}) {
     const userMessage = messages[messages.length - 1]?.content ?? '';
     const reviewerModel = config.factReviewerModel || 'groq/compound';
     const promptTemplate = config.factReviewerPromptTemplate || FALLBACK_CONFIG.factReviewerPromptTemplate;
-    newFacts = reviewReplyForFacts(userMessage, reply, reviewerModel, promptTemplate);
+    const runReview = () => reviewReplyForFacts(userMessage, reply, reviewerModel, promptTemplate);
+    newFacts = debug ? runReview() : delay(FACT_REVIEW_DELAY_MS).then(runReview);
   }
 
   if (debug) {
