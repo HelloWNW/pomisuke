@@ -187,6 +187,25 @@ function extractThinkBlock(text) {
   return { content: text.trim(), thinking: null };
 }
 
+// The local model sometimes restates a condensed version of its reasoning
+// directly in content under a header like "思考プロセス"/"最終出力"/"Final Answer",
+// instead of keeping it in reasoning_content or leaving it out entirely (even
+// when told not to — see LOCAL_LLM_EXTRA_INSTRUCTIONS, which alone isn't
+// reliable). Best-effort, not exhaustive: if a recognizable "here's the real
+// answer" marker line is present, keep only what follows the LAST one;
+// otherwise the text passes through unchanged.
+const FINAL_ANSWER_MARKER_RE = /^#{0,3}\s*(?:\*\*)?(?:最終(?:出力|回答|解答|的な回答)|final\s*(?:answer|output))(?:\*\*)?\s*[:：]?\s*$/im;
+
+function stripLeakedReasoningHeader(text) {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (FINAL_ANSWER_MARKER_RE.test(lines[i].trim())) {
+      return lines.slice(i + 1).join('\n').trim();
+    }
+  }
+  return text;
+}
+
 /**
  * @param {string} rawText
  * @returns {{reply: string, newFacts: string[]}}
@@ -246,11 +265,15 @@ async function chatWithPomisuke(messages, model) {
   }
 
   const message = res.choices[0]?.message ?? {};
-  const { content: withoutThink, thinking } = extractThinkBlock(message.content?.trim() ?? '');
+  let { content: withoutThink, thinking } = extractThinkBlock(message.content?.trim() ?? '');
   // Some backends (e.g. the local llama.cpp server) return reasoning in its
   // own field instead of inline <think> tags.
   const reasoning = [thinking, message.reasoning_content?.trim()].filter(Boolean).join('\n---\n');
   if (reasoning) console.log(`[reasoning] model=${chosenModel}:\n${reasoning}`);
+
+  if (chosenModel === LOCAL_MODEL_ID) {
+    withoutThink = stripLeakedReasoningHeader(withoutThink);
+  }
 
   const { reply, newFacts } = extractNewFacts(withoutThink);
   return { reply: reply || 'ぽみ…うまく話せなかったぷよ…', newFacts };
