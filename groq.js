@@ -82,7 +82,15 @@ async function listModels() {
   return models;
 }
 
-/** Calls the self-hosted llama.cpp server instead of Groq. Throws on any failure. */
+/**
+ * Calls the self-hosted llama.cpp server instead of Groq. Throws on any
+ * failure. Streamed (not a single non-streaming response) because the
+ * server sits behind a Cloudflare-proxied tunnel, which kills the connection
+ * with a 524 if the origin doesn't send *any* response within ~100s —
+ * streaming establishes the response immediately and keeps data flowing, so
+ * a multi-minute generation survives even though the total wait is long.
+ * @returns {Promise<{choices: [{message: {content: string, reasoning_content?: string}}]}>}
+ */
 async function callLocalLLM(systemPrompt, messages) {
   const baseUrl = process.env.LOCAL_LLM_URL;
   const token = process.env.LOCAL_LLM_TOKEN;
@@ -97,7 +105,8 @@ async function callLocalLLM(systemPrompt, messages) {
       body: JSON.stringify({
         model: LOCAL_MODEL_PATH,
         messages: [{ role: 'system', content: systemPrompt }, ...messages],
-        max_tokens: LOCAL_LLM_MAX_TOKENS
+        max_tokens: LOCAL_LLM_MAX_TOKENS,
+        stream: true
         // frequency_penalty/presence_penalty were tried here to counter
         // repetition loops, but live testing against this specific (Q2_K
         // quantized) model showed they make output *worse* — the model is
@@ -110,10 +119,45 @@ async function callLocalLLM(systemPrompt, messages) {
       signal: controller.signal
     });
     if (!res.ok) throw new Error(`local LLM ${res.status}: ${await res.text()}`);
-    return res.json();
+    return await readSseCompletion(res.body);
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** Accumulates an OpenAI-style SSE chat-completion stream into one message. */
+async function readSseCompletion(stream) {
+  let content = '';
+  let reasoningContent = '';
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // keep a possibly-incomplete last line for the next chunk
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (payload === '[DONE]') continue;
+
+      try {
+        const delta = JSON.parse(payload).choices?.[0]?.delta;
+        if (delta?.content) content += delta.content;
+        if (delta?.reasoning_content) reasoningContent += delta.reasoning_content;
+      } catch {
+        // Malformed/partial SSE line — ignore and keep reading.
+      }
+    }
+  }
+
+  return { choices: [{ message: { content, reasoning_content: reasoningContent || undefined } }] };
 }
 
 /**
