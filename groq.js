@@ -144,18 +144,29 @@ async function chatWithPomisuke(messages, model) {
 
   let res;
   try {
-    res = chosenModel === LOCAL_MODEL_ID
-      ? await callLocalLLM(SYSTEM_PROMPT, messages)
-      : await groq.chat.completions.create({
-          model: chosenModel,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            ...messages
-          ],
-          max_tokens: 800,
-          temperature: 0.85,
-          top_p: 0.95
-        });
+    if (chosenModel === LOCAL_MODEL_ID) {
+      res = await callLocalLLM(SYSTEM_PROMPT, messages);
+    } else {
+      const requestOptions = {
+        model: chosenModel,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...messages
+        ],
+        max_completion_tokens: 800,
+        temperature: 0.85,
+        top_p: 0.95
+      };
+      // qwen3.6's reasoning mode burns the whole token budget on internal
+      // chain-of-thought before answering (Pomisuke is casual dialogue, not
+      // complex reasoning/math/code) — Groq's "none" disables it for this
+      // model family specifically. Other families use different reasoning
+      // effort scales (e.g. gpt-oss: low/medium/high), so this is scoped.
+      if (/^qwen\//i.test(chosenModel)) {
+        requestOptions.reasoning_effort = 'none';
+      }
+      res = await groq.chat.completions.create(requestOptions);
+    }
   } catch (err) {
     console.error(`Chat completion failed (model=${chosenModel}):`, err.message || err);
     // Local endpoint: any failure (down, unreachable, timeout) is treated as
