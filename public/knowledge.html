@@ -23,6 +23,15 @@
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   #note-detail { font-size: 1rem; line-height: 1.6; }
   #note-detail .key { color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* Phone / narrow-portrait: stack the panel below the graph instead of
+     beside it — tapping a node shows its contents underneath, not squeezed
+     into a sliver side column. */
+  @media (max-width: 700px), (orientation: portrait) {
+    #app { flex-direction: column; height: 100vh; }
+    #wrap { flex: 1 1 auto; min-height: 0; width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
+    #panel { flex: 0 0 auto; width: 100%; max-width: none; max-height: 42vh; }
+  }
 </style>
 </head>
 <body>

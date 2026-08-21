@@ -142,8 +142,10 @@ async function logNewFactsAsync(sessionId, userId, newFactsOrPromise) {
 
 // ── Menu button ───────────────────────────────────────────────────────────
 function buildMenuMessage() {
-  const carshareUrl = process.env.CARSHARE_FORM_URL || 'https://example.com/carshare';
-  const ledgerUrl   = process.env.LEDGER_FORM_URL   || 'https://example.com/ledger';
+  const carshareUrl  = process.env.CARSHARE_FORM_URL || 'https://example.com/carshare';
+  const ledgerUrl    = process.env.LEDGER_FORM_URL   || 'https://example.com/ledger';
+  const baseUrl      = process.env.RENDER_EXTERNAL_URL || 'https://pomisuke.onrender.com';
+  const knowledgeUrl = `${baseUrl}/knowledge`;
 
   return {
     type: 'template',
@@ -155,7 +157,8 @@ function buildMenuMessage() {
       actions: [
         { type: 'uri',     label: '🚗 カーシェア',  uri: carshareUrl },
         { type: 'uri',     label: '💰 貸借対照表',  uri: ledgerUrl },
-        { type: 'message', label: '⏰ リマインダー', text: 'リマインダー' }
+        { type: 'message', label: '⏰ リマインダー', text: 'リマインダー' },
+        { type: 'uri',     label: '🧠 ぽ脳',        uri: knowledgeUrl }
       ]
     }
   };
