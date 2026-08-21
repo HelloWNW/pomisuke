@@ -74,6 +74,11 @@ vault directly via the GitHub API (no local git clone on the server).
 Browse the knowledge graph and note contents (read-only) at `/vault` on the
 deployed app — public, no auth. Edit vault notes at `/admin` instead (see below).
 
+A second graph at `/knowledge` (also public, read-only) visualizes the same
+idea one level more granular: instead of one node per `.md` file, each node
+is one individual vocabulary word or Pomisuke fact from `vocabulary.md`/
+`pomisuke-fact.md`, clustered around two category hubs.
+
 ### Bot configuration (admin panel)
 
 Visit `/admin` on the deployed app to tune Pomisuke without editing code:
@@ -166,6 +171,10 @@ GitHub API 経由で直接読み書きする。
 
 デプロイ後は `/vault` でナレッジグラフとノートの中身を閲覧できる（読み取り専用・認証なし）。
 vault ノートの編集は `/admin` から行う（後述）。
+
+`/knowledge`（同じく公開・読み取り専用）はもう一段細かいグラフ — `.md` ファイル単位
+ではなく、`vocabulary.md`／`pomisuke-fact.md` 内の語彙・設定エントリ1つ1つがノードに
+なり、2つのカテゴリハブを中心にクラスタ表示される。
 
 ### ボット設定（管理パネル）
 

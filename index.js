@@ -76,6 +76,22 @@ app.get('/api/vault/notes/:folder/:file', async (req, res) => {
   res.json({ path: `${folder}/${file}`, content: result.content });
 });
 
+// ── Knowledge graph viewer (public, read-only) ──────────────────────────────
+// Obsidian-style like /vault, but each node is one vocabulary word or one
+// Pomisuke fact (from vocabulary.md/pomisuke-fact.md), not a whole .md file.
+app.get('/knowledge', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'knowledge.html'));
+});
+
+app.get('/api/knowledge/graph', async (req, res) => {
+  try {
+    res.json(await knowledge.buildFactsGraph());
+  } catch (err) {
+    console.error('knowledge graph error:', err);
+    res.status(502).json({ error: 'vault unreachable' });
+  }
+});
+
 // ── Admin tuning dashboard (protected — unlike /vault, this can rewrite the
 // bot's live persona/params for everyone and a Commit triggers a redeploy) ──
 function requireAdminSecret(req, res, next) {

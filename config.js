@@ -17,7 +17,7 @@ const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
 const FALLBACK_CONFIG = {
   version: 1,
   promptMode: 'normal',
-  defaultModel: 'openai/gpt-oss-120b',
+  defaultModel: 'openai/gpt-oss-20b',
   // Only consulted in vault mode — the model that reviews Pomisuke's own
   // replies for new facts, in a separate conversation from the main chat.
   factReviewerModel: 'groq/compound',

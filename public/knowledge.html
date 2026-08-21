@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ぽみすけ Knowledge Graph</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<style>
+  :root {
+    --bg: #1a1a1e; --panel: #232328; --border: #35353d; --text: #e8e8ec;
+    --muted: #9a9aa5; --vocab: #7aa2f7; --fact: #f7b26a; --hub: #c792ea;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif; }
+  #app { display: flex; height: 100vh; }
+  #wrap { position: relative; flex: 1 1 60%; min-width: 0; border-right: 1px solid var(--border); }
+  #graph { width: 100%; height: 100%; }
+  #panel { flex: 1 1 40%; min-width: 280px; max-width: 480px; overflow-y: auto; padding: 24px; background: var(--panel); }
+  #panel h2 { margin-top: 0; font-size: 1.1rem; color: var(--muted); }
+  .placeholder { color: var(--muted); }
+  .legend { position: absolute; top: 12px; left: 12px; font-size: 0.8rem; color: var(--muted); display: flex; gap: 14px; z-index: 1; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  #note-detail { font-size: 1rem; line-height: 1.6; }
+  #note-detail .key { color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="wrap">
+    <div class="legend">
+      <span><i class="dot" style="background:var(--hub)"></i>category</span>
+      <span><i class="dot" style="background:var(--vocab)"></i>vocabulary</span>
+      <span><i class="dot" style="background:var(--fact)"></i>pomisuke-fact</span>
+    </div>
+    <div id="graph"></div>
+  </div>
+  <div id="panel">
+    <h2 id="note-title">Entry</h2>
+    <div id="note-detail" class="placeholder">Click a node to see what Pomisuke knows.</div>
+  </div>
+</div>
+
+<script>
+const COLORS = { vocabulary: 'var(--vocab)', fact: 'var(--fact)', 'hub-vocabulary': 'var(--hub)', 'hub-fact': 'var(--hub)' };
+const style = getComputedStyle(document.documentElement);
+function resolveColor(v) { return v.startsWith('var(') ? style.getPropertyValue(v.slice(4, -1)).trim() : v; }
+
+async function loadGraph() {
+  const res = await fetch('/api/knowledge/graph');
+  if (!res.ok) throw new Error('failed to load graph');
+  const { nodes, edges } = await res.json();
+
+  const isHub = n => n.category.startsWith('hub-');
+  const visNodes = new vis.DataSet(nodes.map(n => ({
+    id: n.id,
+    label: n.label,
+    color: resolveColor(COLORS[n.category] || '#666'),
+    shape: 'dot',
+    size: isHub(n) ? 22 : 12,
+    font: { color: '#e8e8ec', size: isHub(n) ? 16 : 12 }
+  })));
+  const visEdges = new vis.DataSet(edges.map(e => ({ from: e.from, to: e.to, color: { color: '#45454f' } })));
+
+  const network = new vis.Network(document.getElementById('graph'), { nodes: visNodes, edges: visEdges }, {
+    physics: { solver: 'forceAtlas2Based', stabilization: { iterations: 200 }, forceAtlas2Based: { springLength: 80 } },
+    interaction: { hover: true }
+  });
+
+  const nodeMeta = new Map(nodes.map(n => [n.id, n]));
+  network.on('click', params => {
+    if (params.nodes.length) showEntry(nodeMeta.get(params.nodes[0]));
+  });
+}
+
+function showEntry(node) {
+  const titleEl = document.getElementById('note-title');
+  const detailEl = document.getElementById('note-detail');
+  if (!node) return;
+
+  if (node.category === 'hub-vocabulary' || node.category === 'hub-fact') {
+    titleEl.textContent = node.label;
+    detailEl.innerHTML = '<p class="placeholder">This is a category node — click one of its connected entries instead.</p>';
+    return;
+  }
+
+  titleEl.textContent = node.label;
+  const keyLabel = node.category === 'vocabulary' ? '意味' : '内容';
+  detailEl.innerHTML = `<div class="key">${keyLabel}</div><div>${node.detail}</div>`;
+}
+
+loadGraph().catch(err => {
+  document.getElementById('graph').innerHTML = `<p style="padding:24px;color:var(--muted)">Failed to load graph: ${err.message}</p>`;
+});
+</script>
+</body>
+</html>

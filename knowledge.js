@@ -119,17 +119,22 @@ function queueVaultWrite(fn) {
   return vaultWriteQueue;
 }
 
-/** Existing left-hand keys/words from "- key<sep>value" bullet lines. */
-function extractBulletKeys(content, separator) {
-  const keys = new Set();
+/** @returns {Array<{key: string, value: string}>} parsed "- key<sep>value" bullet lines. */
+function parseBulletEntries(content, separator) {
+  const entries = [];
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('- ')) continue;
     const idx = trimmed.indexOf(separator);
     if (idx === -1) continue;
-    keys.add(trimmed.slice(2, idx).trim());
+    entries.push({ key: trimmed.slice(2, idx).trim(), value: trimmed.slice(idx + separator.length).trim() });
   }
-  return keys;
+  return entries;
+}
+
+/** Existing left-hand keys/words from "- key<sep>value" bullet lines. */
+function extractBulletKeys(content, separator) {
+  return new Set(parseBulletEntries(content, separator).map(e => e.key));
 }
 
 /**
@@ -222,6 +227,32 @@ async function buildWorldSettingPrompt() {
   return { prompt, notesRead };
 }
 
+/**
+ * Entry-level graph for the public /knowledge page — unlike buildGraph()
+ * (one node per vault .md file), each node here is one vocabulary word or
+ * one Pomisuke fact, clustered around two category hub nodes (there's no
+ * natural link between individual entries the way there is between
+ * wikilinked notes).
+ * @returns {Promise<{nodes: Array, edges: Array}>}
+ */
+async function buildFactsGraph() {
+  const [vocabFile, factFile] = await Promise.all([readVocabulary(), readPomisukeFacts()]);
+  const vocabEntries = parseBulletEntries(vocabFile?.content ?? '', '=');
+  const factEntries = parseBulletEntries(factFile?.content ?? '', ':');
+
+  const nodes = [
+    { id: '__vocabulary_hub__', label: '語彙', category: 'hub-vocabulary' },
+    { id: '__fact_hub__', label: 'ぽみすけの設定', category: 'hub-fact' },
+    ...vocabEntries.map(e => ({ id: `vocab:${e.key}`, label: e.key, detail: e.value, category: 'vocabulary' })),
+    ...factEntries.map(e => ({ id: `fact:${e.key}`, label: e.key, detail: e.value, category: 'fact' }))
+  ];
+  const edges = [
+    ...vocabEntries.map(e => ({ from: '__vocabulary_hub__', to: `vocab:${e.key}` })),
+    ...factEntries.map(e => ({ from: '__fact_hub__', to: `fact:${e.key}` }))
+  ];
+  return { nodes, edges };
+}
+
 /** @returns {Promise<{nodes: Array, edges: Array}>} */
 async function buildGraph() {
   const [worldFiles, autoLogFiles] = await Promise.all([
@@ -273,5 +304,6 @@ module.exports = {
   stripWikilinkSyntax,
   wikilinksToMdLinks,
   buildWorldSettingPrompt,
-  buildGraph
+  buildGraph,
+  buildFactsGraph
 };
