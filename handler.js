@@ -154,11 +154,29 @@ function buildMenuMessage() {
   };
 }
 
+const THINKING_DELAY_MS = 5000;
+const THINKING_TEXT = '考え中だぽみ！ぽ脳フル回転だぷーー';
+
 // ── Chat turn (shared by every continuation path) ─────────────────────────
 async function runChatTurn(client, event, sessionId, userId, text) {
   store.addUserMessage(sessionId, text);
   const model = store.getModel(sessionId) || undefined;
-  const { reply, newFacts, modelError } = await chatWithPomisuke(store.getMessagesForAPI(sessionId), model);
+
+  // Slow backends (esp. the local LLM) can take a while — let the user know
+  // it's still working instead of leaving them staring at silence.
+  const thinkingTimer = setTimeout(() => {
+    client.pushMessage({ to: sessionId, messages: [{ type: 'text', text: THINKING_TEXT }] })
+      .catch(err => log('WARN', userId, sessionId, `thinking-ping push failed: ${err.message}`));
+  }, THINKING_DELAY_MS);
+
+  let result;
+  try {
+    result = await chatWithPomisuke(store.getMessagesForAPI(sessionId), model);
+  } finally {
+    clearTimeout(thinkingTimer);
+  }
+
+  const { reply, newFacts, modelError } = result;
   if (modelError) {
     log('WARN', userId, sessionId, `model "${model}" failed, reverting session to default`);
     store.setModel(sessionId, null);
