@@ -187,6 +187,19 @@ function isModelError(err) {
 const NONE_RE = /^none$/i;
 const VOCAB_LINE_RE = /^VOCAB:\s*(.+)$/i;
 const FACT_LINE_RE = /^FACT:\s*(.+)$/i;
+// Groq rejected an oversized reviewer request (413) once vocabulary.md/
+// pomisuke-fact.md/reply content got large enough — most likely an
+// abnormally long reply (e.g. a repetition-loop response from the local
+// model) rather than the vault files themselves, since those stay small
+// under normal growth. Cap everything embedded in the reviewer prompt
+// regardless of which piece caused it.
+const MAX_REVIEW_TEXT_CHARS = 1000; // per userMessage/reply
+const MAX_REVIEW_CONTEXT_CHARS = 3000; // per vocabulary/facts file, most-recent tail kept
+
+function truncateForReview(text, maxChars = MAX_REVIEW_TEXT_CHARS) {
+  if (!text || text.length <= maxChars) return text;
+  return '…(省略)\n' + text.slice(-maxChars);
+}
 // Lazy-load the reviewer conversation: the reply already goes out
 // unblocked, and this additionally delays even *starting* the reviewer
 // call so it never competes with the reply for resources right away.
@@ -240,10 +253,10 @@ async function reviewReplyForFacts(userMessage, reply, reviewerModel, promptTemp
       knowledge.readPomisukeFacts().catch(() => null)
     ]);
     const prompt = renderReviewPrompt(promptTemplate, {
-      vocabulary: vocabFile?.content ?? '(まだ無し)',
-      facts: factFile?.content ?? '(まだ無し)',
-      userMessage,
-      reply
+      vocabulary: truncateForReview(vocabFile?.content, MAX_REVIEW_CONTEXT_CHARS) || '(まだ無し)',
+      facts: truncateForReview(factFile?.content, MAX_REVIEW_CONTEXT_CHARS) || '(まだ無し)',
+      userMessage: truncateForReview(userMessage, MAX_REVIEW_TEXT_CHARS),
+      reply: truncateForReview(reply, MAX_REVIEW_TEXT_CHARS)
     });
     const res = await groq.chat.completions.create({
       model: reviewerModel,
