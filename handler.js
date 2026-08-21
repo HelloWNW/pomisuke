@@ -1,5 +1,6 @@
 const store = require('./store');
-const { chatWithPomisuke, listModels, getDefaultModel, LOCAL_MODEL_ID } = require('./groq');
+const { chatWithPomisuke, listModels, getDefaultModel, parseReminderRequest, LOCAL_MODEL_ID } = require('./groq');
+const reminders = require('./reminders');
 
 // ── ぽよマスター 表記ゆれ正規表現 ────────────────────────────────────────
 // 対応: ぽよマスター / ポヨマスター / ぽよますたー / ぽよますた / ポヨマスタ / ぽよマスタ
@@ -15,6 +16,12 @@ const DEVINFO_RE = /^[/\\]?devinfo$/i;
 const MODEL_CMD_RE = /^\/models?(?:\s+(.+))?$/i;
 const QUICK_REPLY_LIMIT = 13; // LINE quick reply の上限
 const LABEL_MAX_LEN = 20;     // LINE quick reply label の上限
+
+// ── /reminder trigger ────────────────────────────────────────────────────
+// Quick-reply taps only (machine-generated exact text), never hand-typed —
+// unlike /model, so no mention-gating ambiguity to resolve; always active,
+// following devInfo's precedent instead.
+const REMINDER_CMD_RE = /^\/reminder\s+(\S+)(?:\s+(.+))?$/i;
 
 // ── Logger ────────────────────────────────────────────────────────────────
 function log(prefix, userId, sessionId, msg) {
@@ -106,6 +113,78 @@ function buildModelListMessage(models, currentModel, sourceType) {
           }
         };
       })
+    }
+  };
+}
+
+// ── Reminder message builders ───────────────────────────────────────────
+const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'];
+
+/** Current date/time as a JST label for the reminder-parser prompt's context. */
+function nowJstLabel() {
+  const fake = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  const hh = String(fake.getUTCHours()).padStart(2, '0');
+  const mm = String(fake.getUTCMinutes()).padStart(2, '0');
+  return `${fake.getUTCFullYear()}年${fake.getUTCMonth() + 1}月${fake.getUTCDate()}日(${WEEKDAY_JA[fake.getUTCDay()]}) ${hh}:${mm}`;
+}
+
+function buildReminderMenuMessage() {
+  return {
+    type: 'text',
+    text: 'リマインダーだぽみ！なにする？',
+    quickReply: {
+      items: [
+        { type: 'action', action: { type: 'message', label: '追加', text: '/reminder add' } },
+        { type: 'action', action: { type: 'message', label: '削除', text: '/reminder delete' } }
+      ]
+    }
+  };
+}
+
+function buildReminderConfirmMessage(spec, token) {
+  return {
+    type: 'text',
+    text: `${spec.summary} でセットするぽみ。これでいい？`,
+    quickReply: {
+      items: [
+        { type: 'action', action: { type: 'message', label: 'はい', text: `/reminder confirm ${token}` } },
+        { type: 'action', action: { type: 'message', label: 'キャンセル', text: '/reminder cancel' } }
+      ]
+    }
+  };
+}
+
+function buildReminderDeleteListMessage(list) {
+  if (!list.length) {
+    return { type: 'text', text: 'リマインダーはまだ無いぽみ' };
+  }
+  const shown = list.slice(0, QUICK_REPLY_LIMIT);
+  const omittedNote = list.length > shown.length ? `\n…ほか${list.length - shown.length}件（多すぎて表示できないぽみ）` : '';
+  return {
+    type: 'text',
+    text: `リマインダー一覧だぽみ〜\n${shown.map(r => `・${r.summary}`).join('\n')}${omittedNote}`,
+    quickReply: {
+      items: shown.map(r => ({
+        type: 'action',
+        action: {
+          type: 'message',
+          label: r.summary.length > LABEL_MAX_LEN ? r.summary.slice(0, LABEL_MAX_LEN - 1) + '…' : r.summary,
+          text: `/reminder delete-select ${r.id}`
+        }
+      }))
+    }
+  };
+}
+
+function buildReminderDeleteConfirmMessage(record) {
+  return {
+    type: 'text',
+    text: `${record.summary} を削除するぽみ。本当にいい？`,
+    quickReply: {
+      items: [
+        { type: 'action', action: { type: 'message', label: 'はい', text: `/reminder delete-confirm ${record.id}` } },
+        { type: 'action', action: { type: 'message', label: 'キャンセル', text: '/reminder cancel' } }
+      ]
     }
   };
 }
@@ -252,12 +331,128 @@ async function handleEvent(event, client) {
     return;
   }
 
-  // ── 1. リマインダーボタン ────────────────────────────────────────────────
+  // ── 1. リマインダー ────────────────────────────────────────────────────
+  // 全ステップとも /model・メンショントリガーより先に判定し、リターンする —
+  // 特に「回答待ち」状態は次のメッセージを必ず先取りする必要がある。
   if (text === 'リマインダー') {
-    log('INFO', userId, sessionId, 'reminder button tapped');
+    log('INFO', userId, sessionId, 'reminder menu opened');
+    store.setAwaitingReminderAnswer(sessionId, false);
+    store.setPendingReminder(sessionId, null);
     await client.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: 'リマインダーはまだ準備中だぷよ…もうちょっと待ってほしいぽみねえ！🙏' }]
+      messages: [buildReminderMenuMessage()]
+    });
+    return;
+  }
+
+  const reminderCmdMatch = REMINDER_CMD_RE.exec(text);
+  if (reminderCmdMatch) {
+    const [, action, arg] = reminderCmdMatch;
+
+    if (action === 'add') {
+      store.setAwaitingReminderAnswer(sessionId, true);
+      log('INFO', userId, sessionId, 'reminder add: awaiting answer');
+      await client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: '何を覚えるぽよ？' }]
+      });
+      return;
+    }
+
+    if (action === 'delete') {
+      const list = reminders.listReminders(sessionId);
+      log('INFO', userId, sessionId, `reminder delete: listing ${list.length}`);
+      await client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [buildReminderDeleteListMessage(list)]
+      });
+      return;
+    }
+
+    if (action === 'confirm') {
+      const pending = store.getPendingReminder(sessionId);
+      if (!pending || pending.token !== arg) {
+        await client.replyMessage({
+          replyToken: event.replyToken,
+          messages: [{ type: 'text', text: 'もう終わってるか違う内容だぽみ' }]
+        });
+        return;
+      }
+      await reminders.addReminder({
+        sessionId, userId,
+        text: pending.text, kind: pending.kind,
+        nextFireAt: pending.nextFireAt, rrule: pending.rrule, summary: pending.summary
+      });
+      store.setPendingReminder(sessionId, null);
+      log('INFO', userId, sessionId, `reminder confirmed: ${pending.summary}`);
+      await client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: 'ぷみーーー！覚えたぽみ！' }]
+      });
+      return;
+    }
+
+    if (action === 'cancel') {
+      store.setAwaitingReminderAnswer(sessionId, false);
+      store.setPendingReminder(sessionId, null);
+      await client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: 'やめたぽみ' }]
+      });
+      return;
+    }
+
+    if (action === 'delete-select') {
+      const record = reminders.listReminders(sessionId).find(r => r.id === arg);
+      await client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [record ? buildReminderDeleteConfirmMessage(record) : { type: 'text', text: 'もう無いみたいだぽみ' }]
+      });
+      return;
+    }
+
+    if (action === 'delete-confirm') {
+      const removed = await reminders.deleteReminder(sessionId, arg);
+      log('INFO', userId, sessionId, `reminder delete-confirm: ${arg} removed=${removed}`);
+      await client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: removed ? '消したぽみ！' : 'もう無いみたいだぽみ' }]
+      });
+      return;
+    }
+    // Unrecognized /reminder subcommand falls through to the normal triggers below.
+  }
+
+  if (store.isAwaitingReminderAnswer(sessionId)) {
+    store.setAwaitingReminderAnswer(sessionId, false); // single-shot — retry means tapping 追加 again
+    const now = Date.now(); // captured before the LLM call, so relative-interval math isn't inflated by latency
+    const sessionModel = store.getModel(sessionId) || undefined;
+
+    const parsed = await parseReminderRequest(text, nowJstLabel(), sessionModel);
+    let spec = null;
+    if (parsed.understood) {
+      try {
+        spec = reminders.resolveReminderSpec(parsed, now);
+      } catch (err) {
+        log('WARN', userId, sessionId, `reminder resolve failed: ${err.message}`);
+      }
+    }
+
+    if (!spec) {
+      log('INFO', userId, sessionId, `reminder answer not understood: "${text}"`);
+      await client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: 'ぽみはぺだからわからなかったぽみねえ' }]
+      });
+      return;
+    }
+
+    const token = Math.random().toString(36).slice(2, 10);
+    store.setPendingReminder(sessionId, { ...spec, token });
+    log('INFO', userId, sessionId, `reminder parsed: ${spec.summary}`);
+    await client.replyMessage({
+      replyToken: event.replyToken,
+      messages: [buildReminderConfirmMessage(spec, token)]
     });
     return;
   }

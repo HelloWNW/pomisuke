@@ -21,6 +21,7 @@ LINE  →  Render (Express/Node.js)  →  Groq API  →  LLM (e.g. Qwen 3 / LLaM
 - Group/room chats: `@botname` starts/resets a session; replying to Pomisuke's message continues it
 - Sliding 10-message context window (5 user + 5 assistant) per session
 - `/model` (or `/models`) — list and switch the Groq model per session, including a self-hosted option
+- `リマインダー` — time-triggered reminders (add/list/delete), see below
 
 ### Setup
 
@@ -98,6 +99,32 @@ lets you preview changes — including reasoning output, which notes were read,
 and what the reviewer would write — before committing. Protected by
 `ADMIN_SECRET` (see above).
 
+### Reminders
+
+Tap リマインダー in the ぽよマスター menu to add or delete a time-triggered
+reminder, scoped to the current session just like everything else. リマインダー
+を追加 asks 何を覚えるぽよ？ and waits for a free-text answer describing what
+and when — Pomisuke's own default chat model (never the self-hosted
+`huihui-claude(無検閲)` option, which has proven unreliable at strict
+structured output) parses it into one of three shapes:
+
+- **Absolute**: "8月25日の15時に宿題やる" — a specific date/time, down to the second if given.
+- **Relative**: "30分後に宿題やる" — a one-time interval from now.
+- **Recurring**: "毎週水曜に宿題やる", "第四金曜日に...", "3時間ごとに...", "1分半ごとに..." (fractional minutes supported, 1-minute floor) — weekly, biweekly, a specific weekday, the Nth weekday of the month, yearly, or a plain repeating interval.
+
+All parsed dates/intervals are resolved and computed in code (via the
+[`rrule`](https://www.npmjs.com/package/rrule) library for recurrence), never
+trusted to the LLM for arithmetic — the model only extracts constrained
+fields. You'll always get a confirmation prompt showing exactly what was
+understood before it's saved; if the answer can't be parsed at all, Pomisuke
+replies with a fixed line: `ぽみはぺだからわからなかったぽみねえ`.
+リマインダーを削除 lists your active reminders (tap one, then confirm) to
+remove them. Reminders are JST-only (fixed +9:00, no DST) and persisted to
+`data/reminders.json` via the same GitHub-API mechanism as the knowledge
+vault/config, so they survive Render sleep/redeploy; a background check runs
+every 60 seconds plus once immediately at startup, so anything that came due
+while the server was asleep still fires (late, not dropped).
+
 ### Notes
 
 - Free Render instances sleep after 15 min of inactivity — use [UptimeRobot](https://uptimerobot.com) to keep alive.
@@ -122,6 +149,7 @@ LINE  →  Render (Express/Node.js)  →  Groq API  →  LLM (例: Qwen 3 / LLaM
 - グループ/ルームは `@ぽみすけ` でセッション開始・リセット、返信チェーンで継続（レガシー仕様）
 - 直近10件（ユーザー5件＋ぽみすけ5件）のスライディングウィンドウで文脈を保持
 - `/model`（`/models` も可）— セッションごとに使用モデルを一覧・切り替え（セルフホストのオプションも選択可）
+- `リマインダー` — 時間指定のリマインダー機能（追加・一覧・削除）、詳細は後述
 
 ### セットアップ
 
@@ -193,6 +221,33 @@ vault モードでは、別枠の **Fact Reviewer**（専用モデル＋編集�
 のウィンドウ、設定変更や Clear ボタンでクリアされる）で、コミット前に reasoning
 の内容、（vault モードでは）どのノートを読んだか、reviewer が何を書き込むかを
 含めてプレビューできる。`ADMIN_SECRET` で保護される（上記参照）。
+
+### リマインダー
+
+ぽよマスターメニューの「リマインダー」をタップすると、時間指定のリマインダーを
+追加・削除できる（他の機能と同様、現在のセッション単位）。「リマインダーを追加」
+をタップすると「何を覚えるぽよ？」と聞かれ、何をいつ、を自由文で答えるのを待つ —
+ぽみすけの通常の会話用デフォルトモデル（構造化出力が不安定と分かっている
+セルフホストの `huihui-claude(無検閲)` オプションは対象外）がその回答を
+次の3パターンのいずれかに解析する:
+
+- **絶対時刻**: 「8月25日の15時に宿題やる」— 具体的な日時（秒まで指定があればそこまで）。
+- **相対時刻**: 「30分後に宿題やる」— 今からの一度きりの間隔。
+- **繰り返し**: 「毎週水曜に宿題やる」「第四金曜日に…」「3時間ごとに…」
+  「1分半ごとに…」（小数分もOK、最小1分）— 毎週・隔週・特定の曜日・第N◯曜日・
+  毎年・単純な繰り返し間隔に対応。
+
+解析された日時・間隔は全てコード側で確定・計算される（繰り返しの計算には
+[`rrule`](https://www.npmjs.com/package/rrule) ライブラリを使用）— LLM に
+算術を任せることはせず、モデルは制約付きのフィールド抽出のみを行う。保存前に
+必ず、理解した内容そのままの確認プロンプトが表示される。回答が全く解析できない
+場合は、固定文言 `ぽみはぺだからわからなかったぽみねえ` を返す。
+「リマインダーを削除」で有効なリマインダー一覧が表示され（タップして確認すると
+削除）。リマインダーは JST 固定（+9:00、DST なし）で、ナレッジ vault や設定と
+同じ GitHub API 経由で `data/reminders.json` に保存されるため、Render の
+スリープ・再デプロイをまたいでも残る。60秒ごと＋起動直後に1回、バックグラウンドで
+チェックが走るため、サーバーがスリープしている間に来たリマインダーも
+（遅れて、だが漏れなく）発火する。
 
 ### 注意
 

@@ -10,7 +10,9 @@
  *     active: true/false,
  *     messages: [{ role, content }],   // 直近 MAX_HISTORY 件のみ保持（スライディングウィンドウ）
  *     pomisukeMsgIds: Set<string>,      // ぽみすけが送ったLINEメッセージID（返信チェーン判定用）
- *     model: string|null                // /model で選択されたモデル（未選択なら既定値を使用）
+ *     model: string|null,               // /model で選択されたモデル（未選択なら既定値を使用）
+ *     awaitingReminderAnswer: boolean,   // 次のメッセージがリマインダー追加の回答かどうか
+ *     pendingReminder: object|null       // 解析済み・未確定のリマインダー（確認待ち）
  *   }
  */
 
@@ -32,7 +34,9 @@ class ConversationStore {
         active: false,
         messages: [],
         pomisukeMsgIds: new Set(),
-        model: null
+        model: null,
+        awaitingReminderAnswer: false,
+        pendingReminder: null
       };
     }
     return this.sessions[sessionId];
@@ -44,9 +48,30 @@ class ConversationStore {
       active: true,
       messages: [],
       pomisukeMsgIds: new Set(),
-      model
+      model,
+      // Unlike model, the reminder-add flow is transient single-turn state —
+      // abandoning an in-flight attempt on a fresh mention is safer than
+      // leaving a ghost awaiting-state alive in what looks like a new chat.
+      awaitingReminderAnswer: false,
+      pendingReminder: null
     };
     return this.sessions[sessionId];
+  }
+
+  setAwaitingReminderAnswer(sessionId, value) {
+    this._init(sessionId).awaitingReminderAnswer = value;
+  }
+
+  isAwaitingReminderAnswer(sessionId) {
+    return this.sessions[sessionId]?.awaitingReminderAnswer ?? false;
+  }
+
+  setPendingReminder(sessionId, reminder) {
+    this._init(sessionId).pendingReminder = reminder;
+  }
+
+  getPendingReminder(sessionId) {
+    return this.sessions[sessionId]?.pendingReminder ?? null;
   }
 
   getModel(sessionId) {

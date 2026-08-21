@@ -9,6 +9,8 @@ const knowledge = require('./knowledge');
 const config = require('./config');
 const store = require('./store');
 const { chatWithPomisuke, listModels, LOCAL_MODEL_ID } = require('./groq');
+const reminders = require('./reminders');
+const reminderScheduler = require('./reminderScheduler');
 
 const ADMIN_TEST_SESSION_ID = '__admin_test__';
 
@@ -262,3 +264,9 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`ぽみすけ bot listening on port ${PORT} ぷよ！`);
 });
+
+// Fire-and-forget — must not block server startup; a GitHub read failure
+// degrades to an empty reminder list, same fallback posture as config.js.
+reminders.initReminders()
+  .then(() => reminderScheduler.start(client))
+  .catch(err => console.error('reminders: init failed, scheduler not started:', err.message));
