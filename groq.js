@@ -91,6 +91,14 @@ async function callLocalLLM(systemPrompt, messages) {
         model: LOCAL_MODEL_PATH,
         messages: [{ role: 'system', content: systemPrompt }, ...messages],
         max_tokens: 800
+        // frequency_penalty/presence_penalty were tried here to counter
+        // repetition loops, but live testing against this specific (Q2_K
+        // quantized) model showed they make output *worse* — the model is
+        // already at the edge of coherence, and any sampling penalty pushed
+        // it into a different kind of breakdown (echoing its own system
+        // prompt, leaking meta-reasoning into the reply) rather than fixing
+        // the loop. Left out on purpose; see chatWithPomisuke's empty-reply
+        // fallback for how an occasional loop is handled instead.
       }),
       signal: controller.signal
     });
