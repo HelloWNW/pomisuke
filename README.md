@@ -17,9 +17,10 @@ LINE  →  Render (Express/Node.js)  →  Groq API  →  LLM (e.g. Qwen 3 / LLaM
 
 ### Features
 
-- Mention-triggered sessions (`@botname`)
-- Reply-based conversation threading
-- Automatic context compaction (every 6 turns → summarized into memory)
+- Personal chats: no mention needed, conversation continues indefinitely
+- Group/room chats: `@botname` starts/resets a session; replying to Pomisuke's message continues it
+- Sliding 10-message context window (5 user + 5 assistant) per session
+- `/model` (or `/models`) — list and switch the Groq model per session, including a self-hosted option
 
 ### Setup
 
@@ -30,11 +31,21 @@ LINE_CHANNEL_ACCESS_TOKEN=
 LINE_CHANNEL_SECRET=
 GROQ_API_KEY=
 GITHUB_TOKEN=
+LOCAL_LLM_URL=
+LOCAL_LLM_TOKEN=
 ```
 
 `GITHUB_TOKEN` should be a fine-grained GitHub Personal Access Token scoped to
 this repo only, with **Contents: Read and write** permission — it's used to
 read and update the knowledge vault (see below).
+
+`LOCAL_LLM_URL`/`LOCAL_LLM_TOKEN` are optional — only needed for the
+`huihui-claude(無検閲)` option in `/model`, which routes to a self-hosted
+OpenAI-compatible endpoint instead of Groq. `LOCAL_LLM_URL` should include the
+`/v1` path (e.g. `https://your-host.example/v1`); `/chat/completions` is
+appended automatically. If unset, that option still appears in `/model` but
+replies with the same "model unavailable" fallback as a model that no longer
+exists.
 
 **2. Deploy to Render**
 
@@ -78,9 +89,10 @@ LINE  →  Render (Express/Node.js)  →  Groq API  →  LLM (例: Qwen 3 / LLaM
 
 ### 機能
 
-- メンション起動（`@botname`）でセッション開始・リセット
-- 返信チェーンによる会話継続
-- 6ターンごとに自動コンパクション（要約してメモリ節約）
+- 個人チャットはメンション不要、会話は継続し続ける
+- グループ/ルームは `@ぽみすけ` でセッション開始・リセット、返信チェーンで継続（レガシー仕様）
+- 直近10件（ユーザー5件＋ぽみすけ5件）のスライディングウィンドウで文脈を保持
+- `/model`（`/models` も可）— セッションごとに使用モデルを一覧・切り替え（セルフホストのオプションも選択可）
 
 ### セットアップ
 
@@ -91,10 +103,19 @@ LINE_CHANNEL_ACCESS_TOKEN=
 LINE_CHANNEL_SECRET=
 GROQ_API_KEY=
 GITHUB_TOKEN=
+LOCAL_LLM_URL=
+LOCAL_LLM_TOKEN=
 ```
 
 `GITHUB_TOKEN` はこのリポジトリのみに絞った GitHub Fine-grained PAT で、
 **Contents: Read and write** 権限が必要（ナレッジ vault の読み書きに使用）。
+
+`LOCAL_LLM_URL`/`LOCAL_LLM_TOKEN` は任意設定 — `/model` の
+`huihui-claude(無検閲)` オプション専用で、Groq の代わりにセルフホストの
+OpenAI 互換エンドポイントを呼び出す。`LOCAL_LLM_URL` は `/v1` を含めること
+（例: `https://your-host.example/v1`）、`/chat/completions` は自動で付加される。
+未設定の場合も `/model` には表示されるが、選ぶと既存モデルが無い場合と同じ
+フォールバック応答になる。
 
 **2. Render にデプロイ**
 

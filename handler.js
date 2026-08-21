@@ -1,5 +1,5 @@
 const store = require('./store');
-const { chatWithPomisuke, listModels, DEFAULT_MODEL } = require('./groq');
+const { chatWithPomisuke, listModels, DEFAULT_MODEL, LOCAL_MODEL_ID } = require('./groq');
 const knowledge = require('./knowledge');
 
 // ── ぽよマスター 表記ゆれ正規表現 ────────────────────────────────────────
@@ -73,8 +73,15 @@ function modelCommandText(sourceType, arg) {
   return sourceType === 'user' ? cmd : `@ぽみすけ ${cmd}`;
 }
 
+// Display names too long/ugly to show as-is (e.g. the local model's raw file
+// path). The full id is still what /model set uses regardless of display.
+const MODEL_DISPLAY_OVERRIDES = {
+  [LOCAL_MODEL_ID]: 'huihui-claude(無検閲)'
+};
+
 /** Drops the "provider/" prefix for display — the full id is still what /model set uses. */
 function shortModelName(id) {
+  if (MODEL_DISPLAY_OVERRIDES[id]) return MODEL_DISPLAY_OVERRIDES[id];
   const slash = id.indexOf('/');
   return slash === -1 ? id : id.slice(slash + 1);
 }

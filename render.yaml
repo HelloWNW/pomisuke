@@ -17,6 +17,10 @@ services:
         sync: false
       - key: GITHUB_TOKEN
         sync: false
+      - key: LOCAL_LLM_URL
+        sync: false
+      - key: LOCAL_LLM_TOKEN
+        sync: false
       - key: CARSHARE_FORM_URL
         sync: false
       - key: LEDGER_FORM_URL

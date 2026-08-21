@@ -26,9 +26,16 @@ const DEFAULT_MODEL = 'openai/gpt-oss-120b';
 const NON_CHAT_MODEL_RE = /whisper|tts|guard|moderation|orpheus|playai/i;
 const MODEL_LIST_CACHE_TTL_MS = 60 * 60 * 1000;
 
+// ── Local self-hosted model (always offered, not part of Groq's catalog) ──
+// Routes to a self-hosted OpenAI-compatible (llama.cpp) endpoint instead of
+// Groq. URL/token come from env vars — never hardcode credentials in source.
+const LOCAL_MODEL_ID = 'local/huihui-claude';
+const LOCAL_MODEL_PATH = 'C:\\LLM\\models\\Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated.Q2_K.gguf';
+const LOCAL_LLM_TIMEOUT_MS = 60 * 1000;
+
 let modelListCache = null; // {models: string[], expiresAt: number}
 
-/** @returns {Promise<string[]>} sorted chat-capable model IDs, cached 1h. */
+/** @returns {Promise<string[]>} sorted chat-capable model IDs, cached 1h. Always includes LOCAL_MODEL_ID. */
 async function listModels() {
   if (modelListCache && modelListCache.expiresAt > Date.now()) {
     return modelListCache.models;
@@ -38,8 +45,35 @@ async function listModels() {
     .map(m => m.id)
     .filter(id => !NON_CHAT_MODEL_RE.test(id))
     .sort();
+  models.push(LOCAL_MODEL_ID);
   modelListCache = { models, expiresAt: Date.now() + MODEL_LIST_CACHE_TTL_MS };
   return models;
+}
+
+/** Calls the self-hosted llama.cpp server instead of Groq. Throws on any failure. */
+async function callLocalLLM(systemPrompt, messages) {
+  const baseUrl = process.env.LOCAL_LLM_URL;
+  const token = process.env.LOCAL_LLM_TOKEN;
+  if (!baseUrl || !token) throw new Error('LOCAL_LLM_URL/LOCAL_LLM_TOKEN not configured');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LOCAL_LLM_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: LOCAL_MODEL_PATH,
+        messages: [{ role: 'system', content: systemPrompt }, ...messages],
+        max_tokens: 800
+      }),
+      signal: controller.signal
+    });
+    if (!res.ok) throw new Error(`local LLM ${res.status}: ${await res.text()}`);
+    return res.json();
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function getSystemPrompt() {
@@ -95,19 +129,24 @@ async function chatWithPomisuke(messages, model) {
 
   let res;
   try {
-    res = await groq.chat.completions.create({
-      model: chosenModel,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages
-      ],
-      max_tokens: 800,
-      temperature: 0.85,
-      top_p: 0.95
-    });
+    res = chosenModel === LOCAL_MODEL_ID
+      ? await callLocalLLM(systemPrompt, messages)
+      : await groq.chat.completions.create({
+          model: chosenModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...messages
+          ],
+          max_tokens: 800,
+          temperature: 0.85,
+          top_p: 0.95
+        });
   } catch (err) {
-    console.error(`Groq chat completion failed (model=${chosenModel}):`, err.message || err);
-    return { reply: 'ぽみのぽ脳が動かないぷみーーー', newFacts: [], modelError: isModelError(err) };
+    console.error(`Chat completion failed (model=${chosenModel}):`, err.message || err);
+    // Local endpoint: any failure (down, unreachable, timeout) is treated as
+    // "model doesn't exist" per spec — always reverts the session to default.
+    const modelError = chosenModel === LOCAL_MODEL_ID ? true : isModelError(err);
+    return { reply: 'ぽみのぽ脳が動かないぷみーーー', newFacts: [], modelError };
   }
 
   const raw = stripThinkBlock(res.choices[0]?.message?.content?.trim() ?? '');
@@ -115,4 +154,4 @@ async function chatWithPomisuke(messages, model) {
   return { reply: reply || 'ぽみ…うまく話せなかったぷよ…', newFacts };
 }
 
-module.exports = { chatWithPomisuke, listModels, DEFAULT_MODEL };
+module.exports = { chatWithPomisuke, listModels, DEFAULT_MODEL, LOCAL_MODEL_ID };
