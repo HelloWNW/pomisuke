@@ -89,16 +89,19 @@ async function getSystemPrompt() {
 }
 
 /**
- * Strips <think>...</think> reasoning blocks some models emit inline in
- * content. Handles both a fully closed block and one truncated mid-thought
- * by hitting max_tokens (no closing tag) — in the latter case everything
- * from <think> onward is dropped since there's nothing salvageable after it.
+ * Splits off a <think>...</think> reasoning block some models emit inline in
+ * content, so it can be logged server-side instead of shown to the user.
+ * Handles both a fully closed block and one truncated mid-thought by hitting
+ * max_tokens (no closing tag) — in the latter case everything from <think>
+ * onward is reasoning, since there's nothing salvageable after it.
+ * @returns {{content: string, thinking: string|null}}
  */
-function stripThinkBlock(text) {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<think>[\s\S]*$/i, '')
-    .trim();
+function extractThinkBlock(text) {
+  const closed = /<think>([\s\S]*?)<\/think>/i.exec(text);
+  if (closed) return { content: text.replace(closed[0], '').trim(), thinking: closed[1].trim() };
+  const openEnded = /<think>([\s\S]*)$/i.exec(text);
+  if (openEnded) return { content: text.slice(0, openEnded.index).trim(), thinking: openEnded[1].trim() };
+  return { content: text.trim(), thinking: null };
 }
 
 /**
@@ -149,8 +152,14 @@ async function chatWithPomisuke(messages, model) {
     return { reply: 'ぽみのぽ脳が動かないぷみーーー', newFacts: [], modelError };
   }
 
-  const raw = stripThinkBlock(res.choices[0]?.message?.content?.trim() ?? '');
-  const { reply, newFacts } = extractNewFacts(raw);
+  const message = res.choices[0]?.message ?? {};
+  const { content: withoutThink, thinking } = extractThinkBlock(message.content?.trim() ?? '');
+  // Some backends (e.g. the local llama.cpp server) return reasoning in its
+  // own field instead of inline <think> tags.
+  const reasoning = [thinking, message.reasoning_content?.trim()].filter(Boolean).join('\n---\n');
+  if (reasoning) console.log(`[reasoning] model=${chosenModel}:\n${reasoning}`);
+
+  const { reply, newFacts } = extractNewFacts(withoutThink);
   return { reply: reply || 'ぽみ…うまく話せなかったぷよ…', newFacts };
 }
 

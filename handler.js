@@ -94,7 +94,7 @@ function buildModelListMessage(models, currentModel, sourceType) {
 
   return {
     type: 'text',
-    text: `いま使えるモデル一覧だぷよ〜（＞が現在選択中）\n${lines.join('\n')}${omittedNote}`,
+    text: `いま使えるモデル一覧だぷよ〜\n${lines.join('\n')}${omittedNote}`,
     quickReply: {
       items: shown.map(id => {
         const label = shortModelName(id);
