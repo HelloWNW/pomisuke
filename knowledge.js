@@ -152,33 +152,6 @@ function wikilinksToMdLinks(markdown) {
 
 // ── Higher-level helpers ─────────────────────────────────────────────────
 
-/** Reads index.md, follows its [[wikilinks]] one level deep, concatenates. */
-async function buildWorldSettingPrompt() {
-  const indexPath = `${WORLD_SETTING_DIR}/index.md`;
-  const index = await readFile(indexPath);
-  if (!index) throw new Error(`${indexPath} not found`);
-
-  const links = extractWikilinks(index.content);
-  const sections = await Promise.all(
-    links.map(async ({ target }) => {
-      const note = await readFile(`${WORLD_SETTING_DIR}/${target}.md`);
-      return note ? stripWikilinkSyntax(note.content) : null;
-    })
-  );
-
-  return [stripWikilinkSyntax(index.content), ...sections.filter(Boolean)].join('\n\n');
-}
-
-/** Last N auto-log bullet lines as a labeled block, or '' if the file is absent/empty. */
-async function getRecentAutoLog(maxEntries = 20) {
-  const file = await readFile(AUTO_LOG_PATH);
-  if (!file) return '';
-  const bulletLines = file.content.split('\n').filter(line => line.startsWith('- '));
-  if (!bulletLines.length) return '';
-  const recent = bulletLines.slice(-maxEntries);
-  return ['## 最近ぽみすけが話した設定（未確定）', ...recent].join('\n');
-}
-
 /** @returns {Promise<{nodes: Array, edges: Array}>} */
 async function buildGraph() {
   const [worldFiles, autoLogFiles] = await Promise.all([
@@ -226,7 +199,5 @@ module.exports = {
   extractWikilinks,
   stripWikilinkSyntax,
   wikilinksToMdLinks,
-  buildWorldSettingPrompt,
-  getRecentAutoLog,
   buildGraph
 };
