@@ -13,7 +13,7 @@ const DEVINFO_RE = /^[/\\]?devinfo$/i;
 // ── /model trigger ─────────────────────────────────────────────────────────
 // 個人チャットはメンション不要、グループ/ルームは @ぽみすけ 必須（別コマンドのため
 // isMenuTrigger とは独立に判定する）。
-const MODEL_CMD_RE = /^\/model(?:\s+(.+))?$/i;
+const MODEL_CMD_RE = /^\/models?(?:\s+(.+))?$/i;
 const QUICK_REPLY_LIMIT = 13; // LINE quick reply の上限
 const LABEL_MAX_LEN = 20;     // LINE quick reply label の上限
 
@@ -73,24 +73,33 @@ function modelCommandText(sourceType, arg) {
   return sourceType === 'user' ? cmd : `@ぽみすけ ${cmd}`;
 }
 
+/** Drops the "provider/" prefix for display — the full id is still what /model set uses. */
+function shortModelName(id) {
+  const slash = id.indexOf('/');
+  return slash === -1 ? id : id.slice(slash + 1);
+}
+
 /** Builds the /model reply: a list + tap-to-select quick reply. */
 function buildModelListMessage(models, currentModel, sourceType) {
   const shown = models.slice(0, QUICK_REPLY_LIMIT);
-  const lines = shown.map(id => `${id === currentModel ? '✅ ' : '・'}${id}`);
+  const lines = shown.map(id => `${id === currentModel ? '＞' : '・'}${shortModelName(id)}`);
   const omittedNote = models.length > shown.length ? `\n…ほか${models.length - shown.length}件（多すぎて表示できないぽみ）` : '';
 
   return {
     type: 'text',
-    text: `いま使えるモデル一覧だぷよ〜（✅が現在選択中）\n${lines.join('\n')}${omittedNote}`,
+    text: `いま使えるモデル一覧だぷよ〜（＞が現在選択中）\n${lines.join('\n')}${omittedNote}`,
     quickReply: {
-      items: shown.map(id => ({
-        type: 'action',
-        action: {
-          type: 'message',
-          label: id.length > LABEL_MAX_LEN ? id.slice(0, LABEL_MAX_LEN - 1) + '…' : id,
-          text: modelCommandText(sourceType, `set ${id}`)
-        }
-      }))
+      items: shown.map(id => {
+        const label = shortModelName(id);
+        return {
+          type: 'action',
+          action: {
+            type: 'message',
+            label: label.length > LABEL_MAX_LEN ? label.slice(0, LABEL_MAX_LEN - 1) + '…' : label,
+            text: modelCommandText(sourceType, `set ${id}`)
+          }
+        };
+      })
     }
   };
 }
@@ -111,7 +120,7 @@ async function sendReply(client, event, sessionId, text) {
 // Render runs this app as a persistent process, not a frozen-after-response
 // serverless function, so a detached promise keeps running after we return.
 function logNewFactsAsync(sessionId, userId, newFacts) {
-  if (!newFacts.length) return;
+  if (!newFacts?.length) return;
   knowledge.appendAutoLogFacts(newFacts)
     .then(() => log('INFO', userId, sessionId, `auto-log: wrote ${newFacts.length} fact(s)`))
     .catch(err => log('WARN', userId, sessionId, `auto-log write failed: ${err.message}`));
@@ -142,7 +151,11 @@ function buildMenuMessage() {
 async function runChatTurn(client, event, sessionId, userId, text) {
   store.addUserMessage(sessionId, text);
   const model = store.getModel(sessionId) || undefined;
-  const { reply, newFacts } = await chatWithPomisuke(store.getMessagesForAPI(sessionId), model);
+  const { reply, newFacts, modelError } = await chatWithPomisuke(store.getMessagesForAPI(sessionId), model);
+  if (modelError) {
+    log('WARN', userId, sessionId, `model "${model}" failed, reverting session to default`);
+    store.setModel(sessionId, null);
+  }
   log('INFO', userId, sessionId, `pomisuke reply: "${reply}"`);
   store.addAssistantMessage(sessionId, reply);
   await sendReply(client, event, sessionId, reply);
@@ -244,7 +257,7 @@ async function handleEvent(event, client) {
       log('INFO', userId, sessionId, `/model set: ${requested}`);
       await client.replyMessage({
         replyToken: event.replyToken,
-        messages: [{ type: 'text', text: `モデルを ${requested} にしたぽみ！` }]
+        messages: [{ type: 'text', text: 'ぷみーーー！' }]
       });
       return;
     }

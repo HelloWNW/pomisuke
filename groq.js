@@ -19,9 +19,11 @@ const FACT_INSTRUCTIONS = `
 
 const DEFAULT_MODEL = 'openai/gpt-oss-120b';
 
-// Audio/moderation models aren't valid chat-completion models — excluded from
-// the selectable list so /model can't be pointed at something that'll break chat.
-const NON_CHAT_MODEL_RE = /whisper|tts|guard|moderation/i;
+// Audio/moderation/TTS models aren't valid chat-completion models — excluded
+// from the selectable list so /model can't be pointed at something that'll
+// break chat. This is a best-effort blocklist, not exhaustive (Groq's catalog
+// changes); chatWithPomisuke's error handling below is the real safety net.
+const NON_CHAT_MODEL_RE = /whisper|tts|guard|moderation|orpheus|playai/i;
 const MODEL_LIST_CACHE_TTL_MS = 60 * 60 * 1000;
 
 let modelListCache = null; // {models: string[], expiresAt: number}
@@ -53,36 +55,64 @@ async function getSystemPrompt() {
 }
 
 /**
+ * Strips <think>...</think> reasoning blocks some models emit inline in
+ * content. Handles both a fully closed block and one truncated mid-thought
+ * by hitting max_tokens (no closing tag) — in the latter case everything
+ * from <think> onward is dropped since there's nothing salvageable after it.
+ */
+function stripThinkBlock(text) {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/i, '')
+    .trim();
+}
+
+/**
  * @param {string} rawText
  * @returns {{reply: string, newFacts: string[]}}
  */
 function extractNewFacts(rawText) {
-  const facts = [...rawText.matchAll(FACT_MARKER_RE)].map(m => m[1].trim());
+  const newFacts = [...rawText.matchAll(FACT_MARKER_RE)].map(m => m[1].trim());
   const reply = rawText.replace(FACT_MARKER_RE, '').trim();
-  return { reply, facts };
+  return { reply, newFacts };
+}
+
+/** True for Groq API errors caused by the chosen model itself (gone, restricted). */
+function isModelError(err) {
+  const code = err?.error?.error?.code;
+  return code === 'model_not_found' || code === 'model_terms_required' || err?.status === 404;
 }
 
 /**
  * Send messages to Groq and return ぽみすけ's reply plus any new facts it improvised.
  * @param {Array} messages - [{role, content}]
  * @param {string} [model] - overrides DEFAULT_MODEL (e.g. a session's /model choice)
- * @returns {Promise<{reply: string, newFacts: string[]}>}
+ * @returns {Promise<{reply: string, newFacts: string[], modelError?: boolean}>}
  */
 async function chatWithPomisuke(messages, model) {
   const systemPrompt = await getSystemPrompt();
-  const res = await groq.chat.completions.create({
-    model: model || DEFAULT_MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages
-    ],
-    max_tokens: 400,
-    temperature: 0.85,
-    top_p: 0.95
-  });
+  const chosenModel = model || DEFAULT_MODEL;
 
-  const raw = res.choices[0]?.message?.content?.trim() ?? 'ぽみ…うまく話せなかったぷよ…';
-  return extractNewFacts(raw);
+  let res;
+  try {
+    res = await groq.chat.completions.create({
+      model: chosenModel,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages
+      ],
+      max_tokens: 800,
+      temperature: 0.85,
+      top_p: 0.95
+    });
+  } catch (err) {
+    console.error(`Groq chat completion failed (model=${chosenModel}):`, err.message || err);
+    return { reply: 'ぽみのぽ脳が動かないぷみーーー', newFacts: [], modelError: isModelError(err) };
+  }
+
+  const raw = stripThinkBlock(res.choices[0]?.message?.content?.trim() ?? '');
+  const { reply, newFacts } = extractNewFacts(raw);
+  return { reply: reply || 'ぽみ…うまく話せなかったぷよ…', newFacts };
 }
 
 module.exports = { chatWithPomisuke, listModels, DEFAULT_MODEL };
