@@ -56,6 +56,17 @@ const MODEL_LIST_CACHE_TTL_MS = 60 * 60 * 1000;
 // Groq. URL/token come from env vars — never hardcode credentials in source.
 const LOCAL_MODEL_ID = 'local/huihui-claude';
 const LOCAL_MODEL_PATH = 'C:\\LLM\\models\\Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated.Q2_K.gguf';
+// This specific (Q2_K quantized) model tends to leak its reasoning into the
+// actual reply — restating analysis under a "思考プロセス"/"Final Answer"-style
+// header before the real answer, instead of keeping it in reasoning_content.
+// Appended only for this model, not Groq's.
+const LOCAL_LLM_EXTRA_INSTRUCTIONS = `
+
+## 出力ルール（重要・このモデル専用）
+返信には、ぽみすけとしての最終的なセリフ本文だけを出力すること。
+「思考プロセス」「最終出力」「Final Answer」のような見出しや、検討過程・分析・
+下書きを本文に含めてはいけない。前置きや説明は一切不要。キャラクターのセリフ
+以外の文字は一切書かないこと。`;
 // The server's context window is 4096 tokens total (prompt + completion) —
 // 3000 leaves headroom for the system prompt + history. At ~18 tok/s
 // measured on this box, a full 3000-token completion can take ~3 minutes,
@@ -204,7 +215,7 @@ async function chatWithPomisuke(messages, model) {
   let res;
   try {
     if (chosenModel === LOCAL_MODEL_ID) {
-      res = await callLocalLLM(SYSTEM_PROMPT, messages);
+      res = await callLocalLLM(SYSTEM_PROMPT + LOCAL_LLM_EXTRA_INSTRUCTIONS, messages);
     } else {
       const requestOptions = {
         model: chosenModel,
