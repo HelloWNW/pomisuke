@@ -114,11 +114,15 @@ function buildModelListMessage(models, currentModel, sourceType) {
 // ── LINE reply + reply-chain registration ─────────────────────────────────
 // Captures the sent message's ID so that a future reply quoting it is
 // recognized as a chat continuation (see step 4 below).
-async function sendReply(client, event, sessionId, text) {
-  const res = await client.replyMessage({
-    replyToken: event.replyToken,
-    messages: [{ type: 'text', text }]
-  });
+// LINE's reply token has a short validity window (informally ~1 minute) —
+// once a wait has already crossed the "still thinking" threshold, a much
+// longer generation risks that token expiring before the real answer is
+// ready. usePush switches delivery to pushMessage (no such expiry) for
+// exactly those delayed replies; fast replies keep using replyMessage.
+async function sendReply(client, event, sessionId, text, usePush = false) {
+  const res = usePush
+    ? await client.pushMessage({ to: sessionId, messages: [{ type: 'text', text }] })
+    : await client.replyMessage({ replyToken: event.replyToken, messages: [{ type: 'text', text }] });
   const sentId = res?.sentMessages?.[0]?.id;
   if (sentId) store.registerPomisukeMsg(sessionId, sentId);
 }
@@ -164,7 +168,9 @@ async function runChatTurn(client, event, sessionId, userId, text) {
 
   // Slow backends (esp. the local LLM) can take a while — let the user know
   // it's still working instead of leaving them staring at silence.
+  let thinkingSent = false;
   const thinkingTimer = setTimeout(() => {
+    thinkingSent = true;
     client.pushMessage({ to: sessionId, messages: [{ type: 'text', text: THINKING_TEXT }] })
       .catch(err => log('WARN', userId, sessionId, `thinking-ping push failed: ${err.message}`));
   }, THINKING_DELAY_MS);
@@ -183,7 +189,7 @@ async function runChatTurn(client, event, sessionId, userId, text) {
   }
   log('INFO', userId, sessionId, `pomisuke reply: "${reply}"`);
   store.addAssistantMessage(sessionId, reply);
-  await sendReply(client, event, sessionId, reply);
+  await sendReply(client, event, sessionId, reply, thinkingSent);
   logNewFactsAsync(sessionId, userId, newFacts);
 }
 

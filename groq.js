@@ -56,7 +56,14 @@ const MODEL_LIST_CACHE_TTL_MS = 60 * 60 * 1000;
 // Groq. URL/token come from env vars — never hardcode credentials in source.
 const LOCAL_MODEL_ID = 'local/huihui-claude';
 const LOCAL_MODEL_PATH = 'C:\\LLM\\models\\Huihui-Qwen3.5-27B-Claude-4.6-Opus-abliterated.Q2_K.gguf';
-const LOCAL_LLM_TIMEOUT_MS = 60 * 1000;
+// The server's context window is 4096 tokens total (prompt + completion) —
+// 3000 leaves headroom for the system prompt + history. At ~18 tok/s
+// measured on this box, a full 3000-token completion can take ~3 minutes,
+// so the timeout is sized well above that rather than cutting generation
+// short — see runChatTurn's push-instead-of-reply handling in handler.js
+// for how a wait this long still reliably delivers the final answer.
+const LOCAL_LLM_MAX_TOKENS = 3000;
+const LOCAL_LLM_TIMEOUT_MS = 5 * 60 * 1000;
 
 let modelListCache = null; // {models: string[], expiresAt: number}
 
@@ -90,7 +97,7 @@ async function callLocalLLM(systemPrompt, messages) {
       body: JSON.stringify({
         model: LOCAL_MODEL_PATH,
         messages: [{ role: 'system', content: systemPrompt }, ...messages],
-        max_tokens: 800
+        max_tokens: LOCAL_LLM_MAX_TOKENS
         // frequency_penalty/presence_penalty were tried here to counter
         // repetition loops, but live testing against this specific (Q2_K
         // quantized) model showed they make output *worse* — the model is
