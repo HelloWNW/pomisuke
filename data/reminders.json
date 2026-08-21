@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "reminders": [
+    {
+      "id": "r_mt3kg99w_0oos83",
+      "createdAt": "2026-08-21T23:14:07.220Z",
+      "lastFiredAt": null,
+      "sessionId": "Cb58a97845deb4c1c74ddf6b6b5d9a5e2",
+      "userId": "Uc549ae084f48feb70f09d2e21eb4bfdf",
+      "text": "ぺって教えて",
+      "kind": "once",
+      "nextFireAt": "2026-08-22T03:00:00.000Z",
+      "rrule": null,
+      "summary": "8/22 12:00 に「ぺって教えて」"
+    }
+  ]
+}
