@@ -85,8 +85,11 @@
 
       <section>
         <h2>Fact Reviewer (vault mode only)</h2>
-        <p class="error-text" style="color:var(--muted)">Separate conversation that reads Pomisuke's reply and decides whether to log a new fact — Groq only.</p>
+        <p class="error-text" style="color:var(--muted)">Separate conversation that reads Pomisuke's reply (plus current vocabulary.md/pomisuke-fact.md) and writes new, non-duplicate entries straight into those notes — Groq only.</p>
+        <label>Model</label>
         <select id="factReviewerModel"></select>
+        <label style="margin-top:12px">Prompt template ({{vocabulary}}, {{facts}}, {{userMessage}}, {{reply}})</label>
+        <textarea id="factReviewerPromptTemplate" rows="10"></textarea>
       </section>
 
       <section>
@@ -196,6 +199,7 @@ function populateForm(cfg) {
   document.querySelector(`input[name=promptMode][value="${cfg.promptMode}"]`).checked = true;
   document.getElementById('defaultModel').value = cfg.defaultModel;
   document.getElementById('factReviewerModel').value = cfg.factReviewerModel || 'groq/compound';
+  document.getElementById('factReviewerPromptTemplate').value = cfg.factReviewerPromptTemplate || '';
   document.getElementById('systemPrompt').value = cfg.systemPrompt;
   document.getElementById('p_temperature').value = cfg.generalParams.temperature ?? '';
   document.getElementById('p_top_p').value = cfg.generalParams.top_p ?? '';
@@ -293,6 +297,7 @@ function serializeForm() {
     promptMode: document.querySelector('input[name=promptMode]:checked').value,
     defaultModel: document.getElementById('defaultModel').value,
     factReviewerModel: document.getElementById('factReviewerModel').value,
+    factReviewerPromptTemplate: document.getElementById('factReviewerPromptTemplate').value,
     systemPrompt: document.getElementById('systemPrompt').value,
     generalParams,
     modelOverrides
@@ -397,10 +402,15 @@ function appendChatMessage(role, text) {
 }
 
 function renderDiagnostics(data) {
+  const vocab = data.newFacts?.vocab ?? [];
+  const facts = data.newFacts?.facts ?? [];
+  const factsLine = (vocab.length || facts.length)
+    ? [...vocab.map(v => 'VOCAB: ' + v), ...facts.map(f => 'FACT: ' + f)].join(' / ')
+    : '(none)';
   const lines = [
     `<span class="label">model:</span> ${data.model}`,
     data.notesRead ? `<span class="label">notesRead:</span> ${data.notesRead.join(', ')}` : null,
-    `<span class="label">newFacts (reviewer):</span> ${data.newFacts?.length ? data.newFacts.join(' / ') : '(none)'}`,
+    `<span class="label">reviewer wrote:</span> ${factsLine}`,
     `<span class="label">reasoning:</span>\n${data.reasoning || '(none returned)'}`
   ].filter(Boolean);
   document.getElementById('diagnostics').innerHTML = lines.join('\n\n');

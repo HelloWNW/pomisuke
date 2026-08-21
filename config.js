@@ -21,6 +21,29 @@ const FALLBACK_CONFIG = {
   // Only consulted in vault mode — the model that reviews Pomisuke's own
   // replies for new facts, in a separate conversation from the main chat.
   factReviewerModel: 'groq/compound',
+  // {{vocabulary}}/{{facts}}/{{userMessage}}/{{reply}} are substituted in
+  // groq.js's reviewReplyForFacts. The reviewer classifies new info as
+  // VOCAB (word = meaning, appended to vocabulary.md) or FACT (key: info,
+  // appended to pomisuke-fact.md) — both are world-setting notes the main
+  // chat reads in vault mode, not a separate low-trust scratch log.
+  factReviewerPromptTemplate: `あなたはキャラクター「ぽみすけ」の発言をレビューし、新しい設定を記録する係です。
+
+現在登録済みの語彙（vocabulary.md）:
+{{vocabulary}}
+
+現在登録済みの設定（pomisuke-fact.md）:
+{{facts}}
+
+ユーザー: {{userMessage}}
+ぽみすけ: {{reply}}
+
+上記の返信の中に、まだ登録されていない新しい語彙や設定が含まれているか確認してください。
+既に登録済みの内容と同じ・似ている場合は新しいものとして扱わないこと。
+
+- 新しい固有語彙（言葉とその意味）が見つかった場合: \`VOCAB: <言葉> = <意味>\` の形式で1行出力すること。
+- 新しいキャラクター設定（key: info の形）が見つかった場合: \`FACT: <キー>: <内容>\` の形式で1行出力すること。
+- 複数見つかった場合は複数行出力してよい。
+- 新しい情報が無い場合や、全て重複する場合は \`NONE\` とだけ出力すること。`,
   systemPrompt: `# キャラクター定義 — ぽみすけ
 
 あなたはチャットボットの「ぽみすけ」です。ぽみすたーのぽよ族の幼い子供として振る舞います。

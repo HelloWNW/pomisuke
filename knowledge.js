@@ -14,7 +14,8 @@ const API_BASE = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/co
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 const WORLD_SETTING_DIR = 'vault/world-setting';
-const AUTO_LOG_PATH = 'vault/auto-log/facts.md';
+const VOCABULARY_PATH = `${WORLD_SETTING_DIR}/vocabulary.md`;
+const POMISUKE_FACT_PATH = `${WORLD_SETTING_DIR}/pomisuke-fact.md`;
 
 // ── In-memory cache ──────────────────────────────────────────────────────
 const cache = new Map(); // path -> { value, expiresAt }
@@ -109,26 +110,72 @@ async function writeFile(path, content, message) {
   return result;
 }
 
-// Serializes writes to the shared auto-log file so concurrent LINE events
-// don't race on its `sha` and clobber each other's facts.
-let writeQueue = Promise.resolve();
+// Serializes writes to the shared vocabulary/fact notes so concurrent LINE
+// events don't race on `sha` and clobber each other's entries.
+let vaultWriteQueue = Promise.resolve();
 
-async function appendAutoLogFacts(facts) {
-  if (!facts.length) return;
-  writeQueue = writeQueue.then(() => doAppendAutoLogFacts(facts)).catch(err => {
-    console.error('appendAutoLogFacts failed:', err.message);
-  });
-  return writeQueue;
+function queueVaultWrite(fn) {
+  vaultWriteQueue = vaultWriteQueue.then(fn).catch(err => console.error('vault write failed:', err.message));
+  return vaultWriteQueue;
 }
 
-async function doAppendAutoLogFacts(facts) {
-  const existing = await githubGet(AUTO_LOG_PATH);
-  const dateHeader = new Date().toISOString().slice(0, 10);
-  const lines = facts.map(f => `- ${f}`).join('\n');
-  const entry = `\n## ${dateHeader}\n${lines}\n`;
-  const content = (existing?.content ?? '# auto-log\n') + entry;
-  const result = await githubPut(AUTO_LOG_PATH, content, `auto-log: +${facts.length} fact(s)`, existing?.sha);
-  setCached(AUTO_LOG_PATH, { content, sha: result.sha });
+/** Existing left-hand keys/words from "- key<sep>value" bullet lines. */
+function extractBulletKeys(content, separator) {
+  const keys = new Set();
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('- ')) continue;
+    const idx = trimmed.indexOf(separator);
+    if (idx === -1) continue;
+    keys.add(trimmed.slice(2, idx).trim());
+  }
+  return keys;
+}
+
+/**
+ * Appends new bullet-line entries to a note, skipping any whose key/word
+ * (the part before `separator`) already exists — a code-level backstop
+ * dedup check on top of whatever the caller already did (e.g. an LLM
+ * reviewer that saw the current content).
+ * @returns {Promise<string[]>} the entries actually written (post-dedup)
+ */
+async function appendUniqueBulletEntries(path, entries, separator, commitLabel) {
+  if (!entries.length) return [];
+  return queueVaultWrite(async () => {
+    const existing = await githubGet(path);
+    const existingKeys = extractBulletKeys(existing?.content ?? '', separator);
+    const newEntries = entries.filter(entry => {
+      const idx = entry.indexOf(separator);
+      const key = (idx === -1 ? entry : entry.slice(0, idx)).trim();
+      return !existingKeys.has(key);
+    });
+    if (!newEntries.length) return [];
+    const content = (existing?.content ?? '').replace(/\n+$/, '') + '\n' +
+      newEntries.map(e => `- ${e}`).join('\n') + '\n';
+    const result = await githubPut(path, content, `${commitLabel}: +${newEntries.length}`, existing?.sha);
+    setCached(path, { content, sha: result.sha });
+    return newEntries;
+  });
+}
+
+/** @param {string[]} entries - each "word = meaning" */
+async function appendVocabulary(entries) {
+  return appendUniqueBulletEntries(VOCABULARY_PATH, entries, '=', 'vocabulary');
+}
+
+/** @param {string[]} entries - each "key: info" */
+async function appendPomisukeFacts(entries) {
+  return appendUniqueBulletEntries(POMISUKE_FACT_PATH, entries, ':', 'pomisuke-fact');
+}
+
+/** @returns {Promise<{content: string, sha: string} | null>} */
+async function readVocabulary() {
+  return readFile(VOCABULARY_PATH);
+}
+
+/** @returns {Promise<{content: string, sha: string} | null>} */
+async function readPomisukeFacts() {
+  return readFile(POMISUKE_FACT_PATH);
 }
 
 // ── Wikilink parsing (pure, no I/O) ──────────────────────────────────────
@@ -175,16 +222,6 @@ async function buildWorldSettingPrompt() {
   return { prompt, notesRead };
 }
 
-/** Last N auto-log bullet lines as a labeled block, or '' if the file is absent/empty. */
-async function getRecentAutoLog(maxEntries = 20) {
-  const file = await readFile(AUTO_LOG_PATH);
-  if (!file) return '';
-  const bulletLines = file.content.split('\n').filter(line => line.startsWith('- '));
-  if (!bulletLines.length) return '';
-  const recent = bulletLines.slice(-maxEntries);
-  return ['## 最近ぽみすけが話した設定（未確定）', ...recent].join('\n');
-}
-
 /** @returns {Promise<{nodes: Array, edges: Array}>} */
 async function buildGraph() {
   const [worldFiles, autoLogFiles] = await Promise.all([
@@ -227,12 +264,14 @@ module.exports = {
   readFile,
   listFiles,
   writeFile,
-  appendAutoLogFacts,
+  appendVocabulary,
+  appendPomisukeFacts,
+  readVocabulary,
+  readPomisukeFacts,
   clearCache,
   extractWikilinks,
   stripWikilinkSyntax,
   wikilinksToMdLinks,
   buildWorldSettingPrompt,
-  getRecentAutoLog,
   buildGraph
 };

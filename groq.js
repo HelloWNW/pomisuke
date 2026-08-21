@@ -1,6 +1,6 @@
 const Groq = require('groq-sdk');
 const knowledge = require('./knowledge');
-const { getConfig } = require('./config');
+const { getConfig, FALLBACK_CONFIG } = require('./config');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -185,43 +185,73 @@ function isModelError(err) {
 }
 
 const NONE_RE = /^none$/i;
+const VOCAB_LINE_RE = /^VOCAB:\s*(.+)$/i;
+const FACT_LINE_RE = /^FACT:\s*(.+)$/i;
 
-function factReviewPrompt(userMessage, reply) {
-  return `あなたはキャラクター「ぽみすけ」の発言をレビューする係です。
-ぽみすけへのユーザーの発言と、それに対するぽみすけの返信を確認し、返信の中に
-ぽみすけ自身や世界観について新しく語られた設定（性格・好きなもの・出来事など）が
-含まれているか判定してください。
+function renderReviewPrompt(template, vars) {
+  return Object.entries(vars).reduce(
+    (text, [key, value]) => text.split(`{{${key}}}`).join(value),
+    template
+  );
+}
 
-ユーザー: ${userMessage}
-ぽみすけ: ${reply}
-
-含まれている場合: 新しい設定を日本語1文で簡潔に出力すること（1つにつき1行、前置き不要）。
-含まれていない場合: NONE とだけ出力すること。`;
+/** @returns {{vocab: string[], facts: string[]}} */
+function parseReviewOutput(text) {
+  const vocab = [];
+  const facts = [];
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || NONE_RE.test(line)) continue;
+    const vocabMatch = VOCAB_LINE_RE.exec(line);
+    if (vocabMatch) { vocab.push(vocabMatch[1].trim()); continue; }
+    const factMatch = FACT_LINE_RE.exec(line);
+    if (factMatch) { facts.push(factMatch[1].trim()); continue; }
+  }
+  return { vocab, facts };
 }
 
 /**
  * Second, separate conversation: a reviewer model reads Pomisuke's own reply
- * (from the main chat call) and decides whether it stated a new fact worth
- * logging — decoupled from the main persona chat, which no longer needs to
- * self-report via a marker convention. Groq-only (not the local model, which
- * is unstable enough already without also acting as a judge). Never throws —
- * any failure just means no facts get logged for that turn.
- * @returns {Promise<string[]>}
+ * (from the main chat call) plus the vault's current vocabulary/fact notes,
+ * and decides whether it stated something new worth logging — decoupled
+ * from the main persona chat, which no longer self-reports via a marker
+ * convention. New entries are written straight into the world-setting notes
+ * the main chat already reads (not a separate low-trust scratch log), with
+ * a code-level dedup backstop in knowledge.js beyond whatever the reviewer's
+ * own judgment caught. Groq-only (not the local model, which is unstable
+ * enough already without also acting as a judge). Never throws — any
+ * failure just means no facts get logged for that turn.
+ * @returns {Promise<{vocab: string[], facts: string[]}>} entries actually written (post-dedup)
  */
-async function reviewReplyForFacts(userMessage, reply, reviewerModel) {
+async function reviewReplyForFacts(userMessage, reply, reviewerModel, promptTemplate) {
   try {
+    const [vocabFile, factFile] = await Promise.all([
+      knowledge.readVocabulary().catch(() => null),
+      knowledge.readPomisukeFacts().catch(() => null)
+    ]);
+    const prompt = renderReviewPrompt(promptTemplate, {
+      vocabulary: vocabFile?.content ?? '(まだ無し)',
+      facts: factFile?.content ?? '(まだ無し)',
+      userMessage,
+      reply
+    });
     const res = await groq.chat.completions.create({
       model: reviewerModel,
-      messages: [{ role: 'user', content: factReviewPrompt(userMessage, reply) }],
-      max_completion_tokens: 200,
+      messages: [{ role: 'user', content: prompt }],
+      max_completion_tokens: 300,
       temperature: 0.3
     });
     const text = res.choices[0]?.message?.content?.trim() ?? '';
-    if (!text || NONE_RE.test(text)) return [];
-    return text.split('\n').map(line => line.trim()).filter(Boolean);
+    const { vocab, facts } = parseReviewOutput(text);
+
+    const [writtenVocab, writtenFacts] = await Promise.all([
+      knowledge.appendVocabulary(vocab),
+      knowledge.appendPomisukeFacts(facts)
+    ]);
+    return { vocab: writtenVocab, facts: writtenFacts };
   } catch (err) {
     console.error(`Fact review failed (model=${reviewerModel}):`, err.message || err);
-    return [];
+    return { vocab: [], facts: [] };
   }
 }
 
@@ -244,8 +274,6 @@ async function buildSystemPrompt(config, override) {
       console.error('vault: world-setting load failed, using systemPrompt fallback:', err.message);
       basePrompt = config.systemPrompt;
     }
-    const recentLog = await knowledge.getRecentAutoLog(20).catch(() => '');
-    basePrompt = [basePrompt, recentLog].filter(Boolean).join('\n\n');
   } else {
     basePrompt = config.systemPrompt;
   }
@@ -257,17 +285,18 @@ async function buildSystemPrompt(config, override) {
 /**
  * Send messages to Groq (or the local LLM) and return ぽみすけ's reply. In
  * vault mode, also kicks off a separate fact-review conversation (see
- * reviewReplyForFacts) — `newFacts` is the resolved array in debug mode
- * (so the admin dashboard can show it immediately), or an unresolved Promise
- * otherwise, so the extra round trip never delays the user-facing reply
- * (handler.js's logNewFactsAsync awaits it in the background, same as the
- * auto-log write itself).
+ * reviewReplyForFacts) that writes newly-discovered vocabulary/facts
+ * straight into the vault — `newFacts` is the resolved {vocab, facts} in
+ * debug mode (so the admin dashboard can show it immediately), or an
+ * unresolved Promise otherwise, so the extra round trip never delays the
+ * user-facing reply (handler.js's logNewFactsAsync awaits it in the
+ * background).
  * @param {Array} messages - [{role, content}]
  * @param {string} [model] - overrides config.defaultModel (e.g. a session's /model choice)
  * @param {object} [opts]
  * @param {object} [opts.configOverride] - test a draft (uncommitted) config instead of the live one
  * @param {boolean} [opts.debug] - include reasoning/model/notesRead, and resolve newFacts, in the return value
- * @returns {Promise<{reply: string, newFacts: string[]|Promise<string[]>, modelError?: boolean, reasoning?: string|null, model?: string, notesRead?: string[]|null}>}
+ * @returns {Promise<{reply: string, newFacts: {vocab: string[], facts: string[]}|Promise<{vocab: string[], facts: string[]}>, modelError?: boolean, reasoning?: string|null, model?: string, notesRead?: string[]|null}>}
  */
 async function chatWithPomisuke(messages, model, opts = {}) {
   const { configOverride, debug } = opts;
@@ -298,7 +327,7 @@ async function chatWithPomisuke(messages, model, opts = {}) {
     // Local endpoint: any failure (down, unreachable, timeout) is treated as
     // "model doesn't exist" per spec — always reverts the session to default.
     const modelError = chosenModel === LOCAL_MODEL_ID ? true : isModelError(err);
-    const failResult = { reply: 'ぽみのぽ脳が動かないぷみーーー', newFacts: [], modelError };
+    const failResult = { reply: 'ぽみのぽ脳が動かないぷみーーー', newFacts: { vocab: [], facts: [] }, modelError };
     if (debug) Object.assign(failResult, { reasoning: null, model: chosenModel, notesRead });
     return failResult;
   }
@@ -317,11 +346,12 @@ async function chatWithPomisuke(messages, model, opts = {}) {
   const { reply: strippedReply } = extractNewFacts(withoutThink); // strips any stray legacy markers, defensively
   const reply = strippedReply || 'ぽみ…うまく話せなかったぷよ…';
 
-  let newFacts = Promise.resolve([]);
+  let newFacts = Promise.resolve({ vocab: [], facts: [] });
   if (config.promptMode === 'vault') {
     const userMessage = messages[messages.length - 1]?.content ?? '';
     const reviewerModel = config.factReviewerModel || 'groq/compound';
-    newFacts = reviewReplyForFacts(userMessage, reply, reviewerModel);
+    const promptTemplate = config.factReviewerPromptTemplate || FALLBACK_CONFIG.factReviewerPromptTemplate;
+    newFacts = reviewReplyForFacts(userMessage, reply, reviewerModel, promptTemplate);
   }
 
   if (debug) {

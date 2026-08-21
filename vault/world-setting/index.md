@@ -6,3 +6,4 @@
 - [[vocabulary]]
 - [[speaking-style]]
 - [[prohibitions]]
+- [[pomisuke-fact]]

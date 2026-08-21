@@ -16,15 +16,18 @@ This file is documentation only. The bot never reads `vault/README.md` — only
   `world-setting/index.md` and follows its `[[wikilinks]]` **one level deep**
   — so a new note only affects the bot's behavior once you link it from
   `index.md`. No other note is auto-included, and there's no deeper traversal.
-- **`auto-log/facts.md`** — bot-written, lower-trust, only active in **vault**
-  prompt mode (see above). Whenever Pomisuke improvises a new fact about
-  itself or its world mid-conversation, it gets appended here automatically
-  as a dated entry. Recent entries are included in the prompt as loose
-  context (so Pomisuke doesn't immediately contradict itself), but nothing
-  here is treated as canon. Periodically review this
-  file and, if something's worth keeping, move/rewrite it into a
-  `world-setting/` note yourself and link it from `index.md`. Feel free to
-  delete or edit entries here freely — it's a scratch log, not an archive.
+- **Auto-growing facts (vault mode only)** — a separate reviewer conversation
+  (configurable model + prompt on `/admin`) reads each of Pomisuke's replies
+  alongside the current `world-setting/vocabulary.md` and
+  `world-setting/pomisuke-fact.md`, and appends any genuinely new,
+  non-duplicate entries it finds straight into those two notes (`word =
+  meaning` bullets in `vocabulary.md`, `key: info` bullets in
+  `pomisuke-fact.md`) — both are ordinary linked `world-setting/` notes, read
+  by the main chat like any other. There's a code-level dedup check on top of
+  the reviewer's own judgment, so the same word/key won't be appended twice.
+- **`auto-log/facts.md`** — legacy. The bot no longer writes here (superseded
+  by the mechanism above); the file is left in place as a historical record
+  of earlier entries. Safe to delete or archive manually if you don't need it.
 
 ## Editing
 

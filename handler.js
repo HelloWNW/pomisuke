@@ -1,6 +1,5 @@
 const store = require('./store');
 const { chatWithPomisuke, listModels, getDefaultModel, LOCAL_MODEL_ID } = require('./groq');
-const knowledge = require('./knowledge');
 
 // ── ぽよマスター 表記ゆれ正規表現 ────────────────────────────────────────
 // 対応: ぽよマスター / ポヨマスター / ぽよますたー / ぽよますた / ポヨマスタ / ぽよマスタ
@@ -130,16 +129,15 @@ async function sendReply(client, event, sessionId, text, usePush = false) {
 // ── Auto-log (fire-and-forget) ───────────────────────────────────────────
 // Render runs this app as a persistent process, not a frozen-after-response
 // serverless function, so a detached promise keeps running after we return.
-// newFactsOrPromise may be the still-pending fact-review conversation
-// (chatWithPomisuke kicks it off without awaiting, to avoid delaying the
-// user's reply) — awaiting it here works whether it's already an array or
-// a real Promise.
+// newFactsOrPromise is the (possibly still-pending) fact-review conversation
+// — chatWithPomisuke kicks it off without awaiting, to avoid delaying the
+// user's reply. The actual vocabulary.md/pomisuke-fact.md writes already
+// happened inside reviewReplyForFacts by the time this resolves; this just
+// logs the outcome.
 async function logNewFactsAsync(sessionId, userId, newFactsOrPromise) {
-  const newFacts = await newFactsOrPromise;
-  if (!newFacts?.length) return;
-  knowledge.appendAutoLogFacts(newFacts)
-    .then(() => log('INFO', userId, sessionId, `auto-log: wrote ${newFacts.length} fact(s)`))
-    .catch(err => log('WARN', userId, sessionId, `auto-log write failed: ${err.message}`));
+  const { vocab, facts } = await newFactsOrPromise;
+  if (!vocab?.length && !facts?.length) return;
+  log('INFO', userId, sessionId, `vault: +${vocab.length} vocab, +${facts.length} fact(s)`);
 }
 
 // ── Menu button ───────────────────────────────────────────────────────────

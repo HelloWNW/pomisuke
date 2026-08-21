@@ -80,14 +80,18 @@ Visit `/admin` on the deployed app to tune Pomisuke without editing code:
 default model, general system prompt, per-model prompt/param overrides, and a
 **Prompt Mode** switch — `normal` uses the static system prompt edited on the
 page; `vault` rebuilds the prompt from `vault/world-setting/index.md` + linked
-notes + recent auto-log entries instead (the original vault-composed-prompt
-behavior). Config/model/param edits are a two-step **Save** (browser-local
-draft only) → **Commit** (pushes `config/bot-config.json` to `main`, which
-Render then redeploys) flow; vault note edits save straight to GitHub per note.
-A built-in test-chat panel (same 10-message window as LINE, clears on any
-setting change or the Clear button) lets you preview changes — including
-reasoning output and, in vault mode, which notes were read — before committing.
-Protected by `ADMIN_SECRET` (see above).
+notes instead (the original vault-composed-prompt behavior). In vault mode, a
+separate **Fact Reviewer** (its own model + editable prompt template) reads
+each reply and appends any new, non-duplicate vocabulary/facts it finds
+straight into `vocabulary.md`/`pomisuke-fact.md` — both ordinary linked vault
+notes the main chat reads like any other. Config/model/param edits are a
+two-step **Save** (browser-local draft only) → **Commit** (pushes
+`config/bot-config.json` to `main`, which Render then redeploys) flow; vault
+note edits save straight to GitHub per note. A built-in test-chat panel (same
+10-message window as LINE, clears on any setting change or the Clear button)
+lets you preview changes — including reasoning output, which notes were read,
+and what the reviewer would write — before committing. Protected by
+`ADMIN_SECRET` (see above).
 
 ### Notes
 
@@ -169,13 +173,17 @@ vault ノートの編集は `/admin` から行う（後述）。
 デフォルトモデル、汎用システムプロンプト、モデルごとのプロンプト/パラメータ上書き、
 そして **プロンプトモード** の切り替え — `normal` はページ上で編集した静的な
 システムプロンプトを使用、`vault` は `vault/world-setting/index.md` とリンク先
-ノート＋最近の auto-log を組み立ててプロンプトを構成する（元々の vault 合成
-プロンプトの挙動）。設定・モデル・パラメータの編集は **Save**（ブラウザ内の
-下書きのみ）→ **Commit**（`config/bot-config.json` を `main` に push、Render が
-再デプロイ）の2段階フロー。vault ノートの編集はノートごとに直接 GitHub へ保存される。
-テストチャットパネル（LINE と同じ直近10件のウィンドウ、設定変更や Clear ボタンで
-クリアされる）で、コミット前に reasoning の内容や（vault モードでは）どのノートを
-読んだかを含めてプレビューできる。`ADMIN_SECRET` で保護される（上記参照）。
+ノートを組み立ててプロンプトを構成する（元々の vault 合成プロンプトの挙動）。
+vault モードでは、別枠の **Fact Reviewer**（専用モデル＋編集可能なプロンプト
+テンプレート）が各返信を確認し、重複していない新しい語彙・設定を見つけたら
+`vocabulary.md`／`pomisuke-fact.md` に直接追記する — どちらも他のノートと同様に
+メインチャットが読む普通の vault ノート。設定・モデル・パラメータの編集は
+**Save**（ブラウザ内の下書きのみ）→ **Commit**（`config/bot-config.json` を
+`main` に push、Render が再デプロイ）の2段階フロー。vault ノートの編集は
+ノートごとに直接 GitHub へ保存される。テストチャットパネル（LINE と同じ直近10件
+のウィンドウ、設定変更や Clear ボタンでクリアされる）で、コミット前に reasoning
+の内容、（vault モードでは）どのノートを読んだか、reviewer が何を書き込むかを
+含めてプレビューできる。`ADMIN_SECRET` で保護される（上記参照）。
 
 ### 注意
 
